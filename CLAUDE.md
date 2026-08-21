@@ -3,7 +3,7 @@
 Two features, one menu-bar app, no Electron, no network.
 
 - **LocalFlow** — hold Fn, speak, release, text appears in the focused app. Shipped and in daily use.
-- **NotesFM** — Fn+R records a meeting, transcribing both sides live into a markdown file. Built, not yet proven against a real call.
+- **NotesFM** — Fn+R records a meeting, Fn+P pauses it, transcribing both sides live into a markdown file. Built, not yet proven against a real call.
 
 Everything runs on-device. The only network traffic that ever happens is macOS fetching its own speech models once, and an optional localhost Ollama call that is **off by default**.
 
@@ -81,6 +81,12 @@ Sources/LocalFlow/NotesFM/
 
 **System audio uses Core Audio process taps, not ScreenCaptureKit.** Different TCC service (`kTCCServiceAudioCapture`), and its prompt says "record your system audio" rather than "capture the contents of the system display". ScreenCaptureKit also re-prompts monthly.
 
+**Pause stops capture; it does not gate buffers.** `pause()` stops both sources outright rather than dropping their buffers, so the microphone indicator goes out. A pause the indicator contradicts is not one anybody should trust, and pausing is exactly what someone does before saying something off the record. The transcribers stay alive across the gap so the transcript keeps one clock.
+
+**The meeting clock is recorded time, not wall clock.** `AnalyzerInput` is enqueued with no explicit start time, so the analyzer times every result by how much audio it has been handed — feed it nothing and its clock stops. `MeetingClock` mirrors that exactly. Get this wrong and a note added after a ten-minute pause is filed ten minutes below the words it was written about. It is a pure value type taking `Date` as a parameter because it is the only part of pause handling testable without a microphone.
+
+**The meeting HUD is `KeyableMeetingPanel`, not `NonActivatingPanel`.** The two are separate questions and the SDK says so: `NSWindowStyleMaskNonactivatingPanel` "specifies that a panel that does not activate the owning application", while keyboard focus is decided by `canBecomeKeyWindow`. `NonActivatingPanel` returns false there — right for the dictation pill, fatal for a window with a text field.
+
 **Meetings never use a preset.** `.transcription` reports neither timestamps nor partials; `.timeIndexedProgressiveTranscription` adds `.fastResults`, documented as trading accuracy for latency. Meetings want accuracy: `reportingOptions: [.volatileResults]`, `attributeOptions: [.audioTimeRange]`.
 
 **`MeetingTranscriber` is not an actor.** `append` runs per buffer on the audio thread; an actor hop would allocate a `Task` each time for nothing. `NSLock` is unavailable from async contexts, hence the small synchronous accessor helpers.
@@ -93,6 +99,8 @@ Sources/LocalFlow/NotesFM/
 - **Default output device changes leave the tap stale and silent.** Plugging in AirPods requires rebuilding the whole graph, tap included. Watched and handled.
 - **Apple's analyzer performs no audio conversion** and rejects any format but the one it asked for. This is the documented cause of "works in batch, silent when streaming".
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
+- **A window that cannot become key silently eats every keystroke.** No error, no warning — the text field just never receives anything. This is what made "Add a note…" impossible to type into for the whole first version of the HUD.
+- **Fn produces no keyDown, so `.holdBegan` fires before the letter of any chord.** Fn+R therefore started a dictation, which then tripped the meeting's own "finish dictating first" guard, so Fn+R never once started a meeting — and the release typed whatever it had heard into the focused app. `HotkeyManager.fireChord` marks the hold as spoken for and suppresses the release; `abandonHold()` discards the recording silently.
 - Swift 6 strict concurrency is on. Resolve warnings; do not suppress them.
 
 ## Measured
@@ -110,7 +118,7 @@ Sources/LocalFlow/NotesFM/
 
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
-**Verified:** dictation end to end; `--notesfm-selftest` 24/24 including the durability guarantee; zero build warnings; idle footprint.
+**Verified:** dictation end to end; `--notesfm-selftest` 43/43 — durability, markdown round trip, note stamping and the whole pause clock; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
 
 **Not verified — do not claim these work:**
 - Any real system-audio capture. The permission has never been granted on this machine.
@@ -118,6 +126,11 @@ Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation`
 - Text insertion outside TextEdit — Safari, Cursor, Slack, Terminal, Mail are all untested.
 - German spoken through it. The locale retry path has never fired.
 - The library sidebar and toolbar rendering, and Ollama cleanup.
+- **Typing into the HUD note field.** The panel fix follows from the SDK, but no keystroke has been observed landing in it.
+- **Pause and resume against live audio.** The clock arithmetic is tested; stopping and rebuilding a real mic graph and a real process tap mid-meeting is not.
+- **A long pause with the analyzer left idle.** Nothing documents what `SpeechAnalyzer` does when its input goes quiet for an hour.
+- Fn+P, and Fn+R now that it no longer trips the dictation guard.
+- The microphone surviving a device change mid-meeting, and meetings honouring the chosen mic.
 
 **Known open risks:** Core Audio taps reportedly return silence for Microsoft Teams; on speakers the mic re-hears the far end, so the same words may appear under both labels.
 

@@ -100,16 +100,36 @@ final class MeetingWriter: @unchecked Sendable {
         open = OpenLine(speaker: speaker, start: time, last: time, text: cleaned)
     }
 
-    func appendNote(_ text: String) {
-        // A note carries no timestamp of its own. Wall-clock elapsed since the
-        // session began is what the transcript timestamps mean anyway, so this
-        // lands the note among the lines it was written next to — but never above
-        // them, which is what the floor is for: if `started` was taken slightly
-        // before audio actually began, elapsed can lag the transcript clock.
+    /// A note carries no timestamp of its own, so the caller passes the session's
+    /// elapsed *recorded* time.
+    ///
+    /// Recorded, not wall clock: the transcript's timestamps come from the audio
+    /// the analyzer has been given, so a pause freezes them, and a wall-clock note
+    /// written after a long pause would be stamped far below words that were
+    /// actually spoken later. The floor is belt and braces — a note can never be
+    /// stamped above the line already printed before it.
+    func appendNote(_ text: String, at elapsed: TimeInterval) {
         lock.lock()
         let floor = latestTime
         lock.unlock()
-        append(speaker: .note, at: max(Date().timeIntervalSince(started), floor), text: text)
+        append(speaker: .note, at: max(elapsed, floor), text: text)
+    }
+
+    /// A standalone line attributed to nobody, used for the pause marker.
+    ///
+    /// Rendered as italic prose rather than a speaker line so that nothing — not
+    /// the reader, not the library's renderer — can mistake it for something a
+    /// participant said.
+    func appendMarker(_ text: String, at time: TimeInterval) {
+        let cleaned = MeetingMarkdown.singleLine(text)
+        guard !cleaned.isEmpty else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished else { return }
+        latestTime = max(latestTime, time)
+        closeOpenLine()
+        pending.append("_— \(cleaned) —_")
     }
 
     // MARK: Flushing

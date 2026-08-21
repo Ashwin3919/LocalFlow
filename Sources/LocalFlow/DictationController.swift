@@ -83,7 +83,7 @@ final class DictationController {
             }
             finishRecording()
 
-        case .toggleMeeting:
+        case .toggleMeeting, .togglePause:
             // Routed to NotesFM by the app delegate. Dictation deliberately
             // knows nothing about meetings.
             return
@@ -144,6 +144,25 @@ final class DictationController {
                 await self.process(samples: samples)
             }
         }
+    }
+
+    /// Throw away a recording that was never meant to start.
+    ///
+    /// Fn going down begins a dictation before the R of Fn+R has arrived, so the
+    /// chord has to undo it. Silent on purpose — no cancel ping, no "Cancelled"
+    /// flash: the user asked for a meeting, and telling them a dictation they
+    /// never wanted has been cancelled is noise about our own plumbing.
+    func abandonHold() {
+        guard state.isRecording else { return }
+        state = .idle
+        flowBar.hide()
+        pipeline.async { [recorder] in recorder.cancel() }
+    }
+
+    /// A short message in the flow bar. Used for the meeting interlock, which
+    /// must not be a modal alert — the user is on a call.
+    func flash(_ message: String) {
+        flowBar.flash(message)
     }
 
     private func cancelRecording() {

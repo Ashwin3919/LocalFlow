@@ -16,6 +16,9 @@ final class MeetingSession: ObservableObject {
     enum State: Equatable {
         case idle
         case running
+        /// Capture is stopped but the meeting still exists: the transcribers are
+        /// alive, the file is open, and notes can still be added.
+        case paused
         case stopping
     }
 
@@ -41,10 +44,19 @@ final class MeetingSession: ObservableObject {
     private var writer: MeetingWriter?
     private var consumers: [Task<Void, Never>] = []
     private var ticker: Timer?
-    private var startedAt: Date?
     private var lastFlush = Date()
 
+    /// Recorded time, paused spans excluded. See `MeetingClock`.
+    private var clock = MeetingClock()
+
     var isRunning: Bool { state == .running }
+    var isPaused: Bool { state == .paused }
+    /// A meeting exists — recording or paused. What the menu bar and the
+    /// dictation interlock care about.
+    var isActive: Bool { state == .running || state == .paused }
+
+    /// Recorded seconds so far, live.
+    private var currentElapsed: TimeInterval { clock.elapsed(at: Date()) }
 
     // MARK: - Start
 
@@ -57,7 +69,7 @@ final class MeetingSession: ObservableObject {
         elapsed = 0
 
         let started = Date()
-        startedAt = started
+        clock.start(at: started)
         lastFlush = started
         title = Self.defaultTitle(for: started)
 
@@ -71,35 +83,36 @@ final class MeetingSession: ObservableObject {
         }
 
         // The microphone is required. Without it there is no meeting.
-        let mic = MicMeetingSource()
         let micTranscriber = MeetingTranscriber(speaker: .you, locale: locale)
         do {
             try await micTranscriber.start()
-            try mic.start { [weak micTranscriber] buffer in
-                micTranscriber?.append(buffer)
-            }
+        } catch {
+            fail("Microphone transcription unavailable: \(error.localizedDescription)")
+            return
+        }
+        self.micTranscriber = micTranscriber
+        self.mic = MicMeetingSource()
+        consume(micTranscriber)
+        do {
+            try startMicCapture()
         } catch {
             fail("Microphone unavailable: \(error.localizedDescription)")
             return
         }
-        self.mic = mic
-        self.micTranscriber = micTranscriber
-        consume(micTranscriber)
 
         // System audio is optional. Losing it costs the other participants, not
         // the meeting, so a failure degrades rather than aborts.
-        let system = SystemAudioSource()
         let systemTranscriber = MeetingTranscriber(speaker: .them, locale: locale)
         do {
             try await systemTranscriber.start()
-            try system.start { [weak systemTranscriber] buffer in
-                systemTranscriber?.append(buffer)
-            }
-            self.system = system
             self.systemTranscriber = systemTranscriber
+            self.system = SystemAudioSource()
+            try startSystemCapture()
             consume(systemTranscriber)
         } catch {
             await systemTranscriber.finish()
+            self.systemTranscriber = nil
+            self.system = nil
             warning = "Recording your voice only — \(error.localizedDescription)"
             Log.write("NotesFM: system audio unavailable, continuing mic-only: \(error.localizedDescription)")
         }
@@ -107,6 +120,28 @@ final class MeetingSession: ObservableObject {
         startTicker()
         Sound.recordingStarted()
         Log.write("NotesFM: meeting started — \(writer?.url.lastPathComponent ?? "?")")
+    }
+
+    /// Attach the microphone to its transcriber.
+    ///
+    /// Factored out so `resume` goes through exactly the same path as `start`
+    /// rather than a parallel copy that can drift out of step with it.
+    private func startMicCapture() throws {
+        guard let mic, let micTranscriber else {
+            throw MeetingAudioError.unavailable("microphone stream")
+        }
+        try mic.start { [weak micTranscriber] buffer in
+            micTranscriber?.append(buffer)
+        }
+    }
+
+    private func startSystemCapture() throws {
+        guard let system, let systemTranscriber else {
+            throw MeetingAudioError.unavailable("system audio stream")
+        }
+        try system.start { [weak systemTranscriber] buffer in
+            systemTranscriber?.append(buffer)
+        }
     }
 
     private func consume(_ transcriber: MeetingTranscriber) {
@@ -133,17 +168,110 @@ final class MeetingSession: ObservableObject {
         }
     }
 
+    // MARK: - Pause
+
+    /// Stop capturing without ending the meeting.
+    ///
+    /// The sources are genuinely stopped rather than having their buffers dropped
+    /// on the floor. A pause that leaves the microphone indicator lit is not a
+    /// pause anyone should trust, and the moment someone pauses is exactly the
+    /// moment they are about to say something they do not want in the file. The
+    /// transcribers stay alive, so the transcript keeps one continuous clock
+    /// across the gap instead of restarting at zero.
+    func pause() async {
+        guard state == .running else { return }
+        state = .paused
+
+        mic?.stop()
+        system?.stop()
+
+        let now = Date()
+        clock.pause(at: now)
+        elapsed = clock.elapsed(at: now)
+
+        ticker?.invalidate()
+        ticker = nil
+
+        // Collapse the volatile window so words that were half-recognised when
+        // the pause landed are committed, rather than sitting unfinalised across
+        // a gap that may last an hour.
+        await micTranscriber?.flush()
+        await systemTranscriber?.flush()
+        writer?.flush()
+
+        Sound.cancelled()
+        Log.write(String(format: "NotesFM: meeting paused at %.0f s", elapsed))
+    }
+
+    /// Resume capture, rebuilding both audio graphs from scratch.
+    ///
+    /// Rebuilding is not laziness about saving state: the output device may have
+    /// changed while the meeting was paused, and both a fresh tap and a fresh mic
+    /// graph pick up the current hardware format, which the transcribers then
+    /// convert from. The pause marker is written here rather than at pause time so
+    /// it can state how long the gap was, and so it lands *after* any finalised
+    /// text that was still arriving when the pause happened.
+    func resume() async {
+        guard state == .paused else { return }
+
+        do {
+            try startMicCapture()
+        } catch {
+            // Staying paused is the honest outcome. A running clock over a dead
+            // microphone is the one failure this feature must never present.
+            warning = "Could not resume the microphone — \(error.localizedDescription)"
+            Log.write("NotesFM: resume failed: \(error.localizedDescription)")
+            return
+        }
+
+        if system != nil {
+            do {
+                try startSystemCapture()
+                warning = nil
+            } catch {
+                system = nil
+                warning = "Recording your voice only — \(error.localizedDescription)"
+                Log.write("NotesFM: system audio did not resume: \(error.localizedDescription)")
+            }
+        }
+
+        let now = Date()
+        let at = clock.elapsed(at: now)
+        let gap = clock.resume(at: now)
+        if gap > 0 {
+            writer?.appendMarker("paused for \(NotesFM.spanDescription(gap))", at: at)
+            writer?.flush()
+        }
+
+        state = .running
+        startTicker()
+        Sound.recordingStarted()
+        Log.write("NotesFM: meeting resumed")
+    }
+
+    func togglePause() async {
+        switch state {
+        case .running: await pause()
+        case .paused: await resume()
+        case .idle, .stopping: break
+        }
+    }
+
     // MARK: - Notes
 
-    /// A thought the user wants in the record, typed or dictated mid-meeting.
+    /// A thought the user wants in the record, typed mid-meeting.
+    ///
+    /// Allowed while paused on purpose: pausing and then writing down what was
+    /// just said off the record is the reason both features exist.
     func addNote(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, state == .running else { return }
-        writer?.appendNote(trimmed)
+        guard !trimmed.isEmpty, isActive else { return }
+        let at = currentElapsed
+        writer?.appendNote(trimmed, at: at)
         lines.append(TranscribedSegment(
             text: trimmed,
-            start: elapsed,
-            end: elapsed,
+            start: at,
+            end: at,
             isFinal: true,
             speaker: .note
         ))
@@ -159,7 +287,12 @@ final class MeetingSession: ObservableObject {
     // MARK: - Stop
 
     func stop() async {
-        guard state == .running else { return }
+        guard state == .running || state == .paused else { return }
+        // Freeze the clock before anything else. Stopping while paused must not
+        // count the pause, and stopping while running must not lose the last
+        // second of the span.
+        let duration = clock.elapsed(at: Date())
+        clock.freeze(at: Date())
         state = .stopping
 
         ticker?.invalidate()
@@ -174,7 +307,6 @@ final class MeetingSession: ObservableObject {
         for task in consumers { _ = await task.value }
         consumers = []
 
-        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? elapsed
         let url = writer?.url
         writer?.finish(duration: duration)
 
@@ -183,9 +315,9 @@ final class MeetingSession: ObservableObject {
         micTranscriber = nil
         systemTranscriber = nil
         writer = nil
-        startedAt = nil
         state = .idle
         pending = [:]
+        elapsed = duration
 
         Sound.pasted()
         if let url {
@@ -206,6 +338,7 @@ final class MeetingSession: ObservableObject {
         system = nil
         micTranscriber = nil
         systemTranscriber = nil
+        clock = MeetingClock()
         state = .idle
     }
 
@@ -215,8 +348,8 @@ final class MeetingSession: ObservableObject {
         ticker?.invalidate()
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let started = self.startedAt else { return }
-                self.elapsed = Date().timeIntervalSince(started)
+                guard let self, self.state == .running else { return }
+                self.elapsed = self.clock.elapsed(at: Date())
 
                 // The whole reason for a heartbeat: a crash or a dead battery
                 // should cost at most this many seconds, not the whole meeting.

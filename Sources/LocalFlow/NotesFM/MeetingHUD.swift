@@ -7,6 +7,25 @@ import SwiftUI
 /// be a window you can glance at and type into, not a transient pill. It stays
 /// out of the way in a corner and never takes focus, because the user is in a
 /// call in another app the whole time.
+/// A panel that can take keyboard focus without bringing the app forward.
+///
+/// `NonActivatingPanel` cannot be reused here. It returns false from
+/// `canBecomeKey`, which is correct for the dictation pill — that window must
+/// never take focus away from whatever is being typed into — and fatal for this
+/// one, because a window that can never become key has no first responder, so
+/// its text field silently swallows every keystroke. That is precisely what made
+/// "Add a note…" impossible to type into.
+///
+/// The two properties are separate questions, and the SDK is explicit about it:
+/// `NSWindowStyleMaskNonactivatingPanel` "specifies that a panel that does not
+/// activate the owning application", while whether the panel can hold keyboard
+/// focus is decided by `canBecomeKeyWindow`. Together they give the behaviour a
+/// meeting needs — type a note without the call losing the foreground.
+final class KeyableMeetingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
 final class MeetingHUDController {
     private var window: NSWindow?
@@ -28,7 +47,7 @@ final class MeetingHUDController {
 
     private func build() {
         let hosting = NSHostingController(rootView: MeetingHUDView(session: session))
-        let panel = NonActivatingPanel(
+        let panel = KeyableMeetingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
             styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
@@ -79,15 +98,32 @@ private struct MeetingHUDView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($noteFocused)
                     .onSubmit(commitNote)
+                    .disabled(!session.isActive)
                 Button("Add", action: commitNote)
                     .disabled(note.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            Button(role: .destructive) {
-                Task { await session.stop() }
-            } label: {
-                Label("Stop and Save", systemImage: "stop.fill")
+            HStack(spacing: 8) {
+                // Not focused automatically. The user is in a call in another app,
+                // and stealing their keystrokes into this field the moment the
+                // window appears would be worse than one click.
+                Button {
+                    Task { await session.togglePause() }
+                } label: {
+                    Label(
+                        session.isPaused ? "Resume" : "Pause",
+                        systemImage: session.isPaused ? "play.fill" : "pause.fill"
+                    )
                     .frame(maxWidth: .infinity)
+                }
+                .disabled(!session.isActive)
+
+                Button(role: .destructive) {
+                    Task { await session.stop() }
+                } label: {
+                    Label("Stop and Save", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
             }
             .controlSize(.large)
         }
@@ -95,18 +131,29 @@ private struct MeetingHUDView: View {
         .frame(minWidth: 320, minHeight: 260)
     }
 
+    /// The clock stops while paused, so the label has to say why — a frozen timer
+    /// with "Recording" next to it is the worst of the possible readings.
+    private var status: String {
+        switch session.state {
+        case .running: "Recording"
+        case .paused: "Paused — not recording"
+        case .stopping: "Saving…"
+        case .idle: "Stopped"
+        }
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(session.isRunning ? Color.red : Color.secondary)
+                .fill(session.isRunning ? Color.red : session.isPaused ? Color.orange : Color.secondary)
                 .frame(width: 8, height: 8)
             Text(NotesFM.timestamp(session.elapsed))
                 .font(.system(.title3, design: .monospaced))
                 .monospacedDigit()
             Spacer()
-            Text(session.state == .stopping ? "Saving…" : "Recording")
+            Text(status)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(session.isPaused ? Color.orange : Color.secondary)
         }
     }
 
@@ -141,7 +188,7 @@ private struct MeetingHUDView: View {
             .frame(maxHeight: .infinity)
             .overlay {
                 if session.lines.isEmpty && session.pending.isEmpty {
-                    Text("Listening…")
+                    Text(session.isPaused ? "Paused" : "Listening…")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                 }

@@ -33,7 +33,11 @@ enum NotesFMSelfTest {
         writer.append(speaker: .you, at: 4.2, text: "Let's start with the migration.")
         writer.append(speaker: .you, at: 7.9, text: "I pushed the branch last night.")
         writer.append(speaker: .them, at: 12.4, text: "Did the rollback plan get reviewed?")
-        writer.appendNote("check rollback before Friday")
+        writer.appendNote("check rollback before Friday", at: 14.0)
+        // A note whose elapsed time lags the transcript must not be printed above
+        // the line before it, which is what the floor in `appendNote` is for.
+        writer.appendNote("stamped by the floor, not by 1 s", at: 1.0)
+        writer.appendMarker("paused for 3m 20s", at: 20.0)
         writer.append(speaker: .them, at: 40.0, text: "Separate thought, well after the gap.")
         writer.flush()
 
@@ -46,6 +50,18 @@ enum NotesFMSelfTest {
               afterFlush.contains("Let's start with the migration. I pushed the branch last night."))
         check("distant same-speaker line NOT merged",
               afterFlush.contains("00:00:40") || afterFlush.contains("Separate thought"))
+        check("note stamped at the elapsed time it was given",
+              afterFlush.contains("[00:00:14] Note"))
+        check("a note behind the transcript is floored, never stamped above it",
+              afterFlush.contains("[00:00:14] Note** — stamped by the floor"))
+        check("two notes stay two lines, never merged",
+              afterFlush.contains("check rollback before Friday")
+                  && afterFlush.contains("stamped by the floor, not by 1 s")
+                  && !afterFlush.contains("Friday stamped"))
+        check("pause marker written as italic prose, not as a speaker",
+              afterFlush.contains("_— paused for 3m 20s —_"))
+        check("pause marker is attributed to nobody",
+              !afterFlush.contains("paused for 3m 20s** —"))
 
         // 2. Durability: everything up to the last flush must already be on disk,
         //    which is what makes a force-quit mid-meeting survivable.
@@ -72,6 +88,8 @@ enum NotesFMSelfTest {
         // The writer stores whole seconds, so 62.5 legitimately becomes 63.
         check("duration round-tripped", abs(note.duration - 62.5) <= 1)
         check("body kept the transcript", note.body.contains("rollback plan get reviewed"))
+        check("pause marker survived the store round trip",
+              note.body.contains("_— paused for 3m 20s —_"))
         check("snippet is non-empty", !note.snippet.isEmpty)
 
         // 4. Round-trip safety: save then reload must not alter the body.
@@ -96,7 +114,53 @@ enum NotesFMSelfTest {
         check("mangled file body preserved whole",
               store.notes.contains { $0.body.contains("no frontmatter at all") })
 
-        // 6. Search.
+        // 6. The pause clock. Pure arithmetic on injected dates, so the one part
+        //    of pause handling that does not need a microphone is actually proven
+        //    rather than assumed.
+        let t0 = Date(timeIntervalSinceReferenceDate: 1_000_000)
+        func at(_ offset: TimeInterval) -> Date { t0.addingTimeInterval(offset) }
+
+        var clock = MeetingClock()
+        clock.start(at: t0)
+        check("clock counts a running span", abs(clock.elapsed(at: at(10)) - 10) < 0.001)
+
+        clock.pause(at: at(10))
+        check("clock reports paused", clock.isPaused)
+        check("a paused clock does not advance", abs(clock.elapsed(at: at(600)) - 10) < 0.001)
+
+        let gap = clock.resume(at: at(610))
+        check("resume reports the length of the pause", abs(gap - 600) < 0.001)
+        check("clock is no longer paused", !clock.isPaused)
+        check("recorded time excludes the pause",
+              abs(clock.elapsed(at: at(615)) - 15) < 0.001)
+
+        clock.pause(at: at(615))
+        clock.resume(at: at(1215))
+        check("two pauses both come off the total",
+              abs(clock.elapsed(at: at(1220)) - 20) < 0.001)
+
+        // Stopping while paused must not bank the pause as recorded audio, and
+        // freeze has to be safe to evaluate more than once.
+        var stopped = clock
+        stopped.pause(at: at(1220))
+        stopped.freeze(at: at(9999))
+        check("stopping while paused excludes the pause",
+              abs(stopped.elapsed(at: at(99999)) - 20) < 0.001)
+        check("a frozen clock never moves again",
+              stopped.elapsed(at: at(100)) == stopped.elapsed(at: at(1_000_000)))
+
+        var never = MeetingClock()
+        check("an unstarted clock reads zero", never.elapsed(at: t0) == 0)
+        check("resuming a clock that never paused is a no-op", never.resume(at: t0) == 0)
+        never.pause(at: t0)
+        check("pausing an unstarted clock does not start it", !never.isPaused)
+
+        check("span description reads as a length, not a timestamp",
+              NotesFM.spanDescription(200) == "3m 20s"
+                  && NotesFM.spanDescription(45) == "45s"
+                  && NotesFM.spanDescription(3700) == "1h 1m")
+
+        // 7. Search.
         check("search finds by body text", !store.search("rollback").isEmpty)
         check("search is case-insensitive", !store.search("ROLLBACK").isEmpty)
         check("search misses nonsense", store.search("zzzznotpresent").isEmpty)

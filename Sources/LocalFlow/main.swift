@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var meetingHUD = MeetingHUDController(session: meeting)
     private let notesWindow = NotesFMWindowController()
     private let meetingLine = NSMenuItem(title: "Start Meeting", action: nil, keyEquivalent: "")
+    private let pauseLine = NSMenuItem(title: "Pause Meeting", action: nil, keyEquivalent: "")
+    /// Shown only during a meeting: the HUD has a close button, and closing it
+    /// used to strand the user with a running meeting they could no longer see or
+    /// add notes to.
+    private let hudLine = NSMenuItem(title: "Show Meeting Window", action: nil, keyEquivalent: "")
     private var lastWarnings: [String] = ["__unset__"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,10 +50,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self else { return }
                 // Meetings are a separate mode, so the action is routed here
-                // rather than being taught to the dictation state machine.
-                if case .toggleMeeting = action {
+                // rather than being taught to the dictation state machine. Both
+                // chords abandon the hold that started them first: Fn produces no
+                // keyDown, so the hold had already begun a dictation by the time
+                // the letter arrived.
+                switch action {
+                case .toggleMeeting:
+                    self.controller.abandonHold()
                     await self.toggleMeeting()
-                } else {
+                case .togglePause:
+                    self.controller.abandonHold()
+                    await self.togglePause()
+                default:
+                    guard !self.blockedByMeeting(action) else { return }
                     self.controller.handle(action)
                 }
             }
@@ -65,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         chooseHotkeyMode()
+        renderMeetingState()
         startEventTap()
         refreshWarnings()
         presentSetupIfNeeded()
@@ -121,6 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingLine.action = #selector(toggleMeetingFromMenu)
         meetingLine.target = self
         menu.addItem(meetingLine)
+
+        pauseLine.action = #selector(togglePauseFromMenu)
+        pauseLine.target = self
+        menu.addItem(pauseLine)
+
+        hudLine.action = #selector(showMeetingHUD)
+        hudLine.target = self
+        menu.addItem(hudLine)
 
         let captureTest = NSMenuItem(
             title: "Test Audio Capture…",
@@ -369,10 +392,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+    /// One microphone, two features that both want it.
+    ///
+    /// The guard used to run only one way — a meeting refused to start while a
+    /// dictation was in progress, but nothing stopped a dictation once a meeting
+    /// was under way. Holding Fn mid-meeting then opened a second engine on the
+    /// same device and typed the user's own words into whatever app was in front,
+    /// while the meeting recorded them again as "You".
+    private func blockedByMeeting(_ action: HotkeyManager.Action) -> Bool {
+        guard meeting.isActive else { return false }
+        switch action {
+        case .holdBegan, .lockHandsFree:
+            // Silent. Fn going down is also the first half of Fn+R and Fn+P, and
+            // telling someone dictation is off when they were reaching for the
+            // stop hotkey would be a message about nothing.
+            return true
+        case .holdEnded:
+            // Only here is it certain the hold was meant as dictation: a chord
+            // suppresses the release entirely, so reaching this point means Fn was
+            // pressed and let go with no letter in between.
+            controller.flash("Meeting recording — dictation is off")
+            return true
+        case .toggleHandsFree:
+            controller.flash("Meeting recording — dictation is off")
+            return true
+        case .cancel, .pasteLast, .toggleMeeting, .togglePause:
+            return false
+        }
+    }
+
     @objc private func toggleMeetingFromMenu() { Task { await toggleMeeting() } }
+    @objc private func togglePauseFromMenu() { Task { await togglePause() } }
+    @objc private func showMeetingHUD() { meetingHUD.show() }
+
+    private func togglePause() async {
+        guard meeting.isActive else { return }
+        await meeting.togglePause()
+        renderMeetingState()
+    }
 
     private func toggleMeeting() async {
-        if meeting.isRunning {
+        if meeting.isActive {
             await meeting.stop()
         } else {
             guard !controller.isRecordingNow else {
@@ -391,7 +451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func renderMeetingState() {
-        meetingLine.title = meeting.isRunning ? "Stop Meeting  (Fn+R)" : "Start Meeting  (Fn+R)"
+        meetingLine.title = meeting.isActive ? "Stop Meeting  (Fn+R)" : "Start Meeting  (Fn+R)"
+        pauseLine.title = meeting.isPaused ? "Resume Meeting  (Fn+P)" : "Pause Meeting  (Fn+P)"
+        pauseLine.isHidden = !meeting.isActive
+        hudLine.isHidden = !meeting.isActive
     }
     @objc private func openSetup() { setupWindow.show() }
 

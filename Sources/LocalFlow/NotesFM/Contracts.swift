@@ -131,6 +131,71 @@ enum MeetingAudioError: LocalizedError {
     }
 }
 
+// MARK: - The meeting clock
+
+/// Wall time minus every paused span.
+///
+/// A separate value type, and not just three fields on `MeetingSession`, for two
+/// reasons. It is the one part of pause handling that can be checked without a
+/// microphone — `MeetingSession` needs TCC permission and real hardware, this
+/// needs a date — and it is the part most worth checking, because every timestamp
+/// in the file, the duration in the frontmatter, and the position of every note
+/// are derived from it.
+///
+/// Why recorded time rather than wall clock is the meeting's clock: `AnalyzerInput`
+/// is enqueued without an explicit start time, so Apple's analyzer times each
+/// result by how much audio it has been handed. Hand it nothing during a pause and
+/// its clock stops. If this one kept running, a note added after a ten-minute
+/// pause would be filed ten minutes below the words it was written about.
+///
+/// `Date` is passed in rather than read inside, so a test can advance time.
+struct MeetingClock: Equatable {
+    private var accumulated: TimeInterval = 0
+    /// Start of the span currently being recorded; `nil` while paused or stopped.
+    private var spanStartedAt: Date?
+    private var pausedAt: Date?
+
+    var isPaused: Bool { pausedAt != nil }
+
+    mutating func start(at now: Date) {
+        accumulated = 0
+        spanStartedAt = now
+        pausedAt = nil
+    }
+
+    /// Seconds recorded so far.
+    func elapsed(at now: Date) -> TimeInterval {
+        guard let spanStartedAt else { return accumulated }
+        return accumulated + now.timeIntervalSince(spanStartedAt)
+    }
+
+    mutating func pause(at now: Date) {
+        guard spanStartedAt != nil else { return }
+        accumulated = elapsed(at: now)
+        spanStartedAt = nil
+        pausedAt = now
+    }
+
+    /// Resumes and reports how long the pause lasted, which is what the marker
+    /// line in the transcript says.
+    @discardableResult
+    mutating func resume(at now: Date) -> TimeInterval {
+        guard let pausedAt else { return 0 }
+        let gap = now.timeIntervalSince(pausedAt)
+        self.pausedAt = nil
+        spanStartedAt = now
+        return gap
+    }
+
+    /// Stops the clock for good. Idempotent, so stopping a paused meeting cannot
+    /// add the pause to the total.
+    mutating func freeze(at now: Date) {
+        accumulated = elapsed(at: now)
+        spanStartedAt = nil
+        pausedAt = nil
+    }
+}
+
 // MARK: - Shared constants
 
 enum NotesFM {
@@ -154,5 +219,17 @@ enum NotesFM {
     static func timestamp(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds.rounded()))
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+    }
+
+    /// "2m 14s" — a *length*, for the pause marker. `timestamp` is not used there
+    /// because 00:02:14 in a transcript reads as a position, not a duration.
+    static func spanDescription(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        if minutes > 0 { return "\(minutes)m \(secs)s" }
+        return "\(secs)s"
     }
 }

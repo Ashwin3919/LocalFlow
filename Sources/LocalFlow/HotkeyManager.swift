@@ -18,6 +18,7 @@ final class HotkeyManager: @unchecked Sendable {
         case holdEnded(duration: TimeInterval)
         case toggleHandsFree
         case toggleMeeting
+        case togglePause
         case lockHandsFree
         case cancel
         case pasteLast
@@ -27,6 +28,7 @@ final class HotkeyManager: @unchecked Sendable {
         static let space: Int64 = 49
         static let escape: Int64 = 53
         static let r: Int64 = 15
+        static let p: Int64 = 35
         static let v: Int64 = 9
     }
 
@@ -43,6 +45,9 @@ final class HotkeyManager: @unchecked Sendable {
     private var triggerDownAt: TimeInterval = 0
     private var lastTriggerUpAt: TimeInterval = 0
     private var tapChainCount = 0
+    /// Set when a chord like Fn+R fired during the current hold, so releasing the
+    /// trigger does not then look like the end of a dictation.
+    private var chordFiredDuringHold = false
 
     /// Set by the owner so Esc is only swallowed while we are actually recording.
     var isRecording: (@Sendable () -> Bool)?
@@ -155,9 +160,20 @@ final class HotkeyManager: @unchecked Sendable {
                 tapChainCount = 0
             }
             triggerDownAt = now
+            chordFiredDuringHold = false
             emit(.holdBegan)
         } else {
             lastTriggerUpAt = now
+            // Fn going down always emits `.holdBegan`, because Fn produces no
+            // keyDown of its own and there is no way to know yet whether a letter
+            // is coming. If one did come, this hold belonged to that chord and
+            // never to dictation, so the release must not be reported as the end
+            // of a phrase — otherwise Fn+R both blocked the meeting it was asking
+            // for and typed whatever it heard into the focused app.
+            if chordFiredDuringHold {
+                chordFiredDuringHold = false
+                return
+            }
             emit(.holdEnded(duration: now - triggerDownAt))
         }
     }
@@ -176,13 +192,21 @@ final class HotkeyManager: @unchecked Sendable {
         // mode from dictation rather than a variation of it: it captures system
         // audio too, runs for hours, and writes to a file instead of typing.
         if keycode == Keycode.r, triggerHeld(in: flags), !flags.contains(.maskCommand) {
-            emit(.toggleMeeting)
+            fireChord(.toggleMeeting)
+            return true
+        }
+
+        // Trigger + P — pause or resume the meeting. Worth a hotkey of its own:
+        // the reason to pause is usually that someone is about to say something
+        // off the record, and that is not a moment to go hunting for a window.
+        if keycode == Keycode.p, triggerHeld(in: flags), !flags.contains(.maskCommand) {
+            fireChord(.togglePause)
             return true
         }
 
         // Trigger + Space — hands-free toggle.
         if keycode == Keycode.space, triggerHeld(in: flags) {
-            emit(.toggleHandsFree)
+            fireChord(.toggleHandsFree)
             return true
         }
 
@@ -193,6 +217,13 @@ final class HotkeyManager: @unchecked Sendable {
         }
 
         return false
+    }
+
+    /// A chord pressed while the trigger is held. Marks the hold as spoken for so
+    /// the eventual release is not mistaken for the end of a dictation.
+    private func fireChord(_ action: Action) {
+        chordFiredDuringHold = true
+        emit(action)
     }
 
     private func emit(_ action: Action) {

@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import Speech
 import SwiftUI
 
 /// Single settings window, hosted SwiftUI inside a plain NSWindow.
@@ -70,6 +71,8 @@ private struct SettingsView: View {
     @State private var flowBar = Settings.shared.flowBarEnabled
     @State private var historyEnabled = Settings.shared.historyEnabled
     @State private var micUID = Settings.shared.microphoneUID
+    @State private var meetingLocale = Settings.shared.meetingLocale
+    @State private var meetingLocales: [Locale] = []
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var ollamaReachable: Bool? = nil
     @State private var historyCount = History.count()
@@ -80,11 +83,107 @@ private struct SettingsView: View {
         TabView {
             hotkeysTab.tabItem { Text("Hotkeys") }
             speechTab.tabItem { Text("Speech") }
+            meetingsTab.tabItem { Text("Meetings") }
             cleanupTab.tabItem { Text("Cleanup") }
             generalTab.tabItem { Text("General") }
         }
         .padding(16)
         .frame(width: 520, height: 620)
+    }
+
+    // MARK: Meetings
+
+    private var meetingsTab: some View {
+        Form {
+            Picker("Meeting language", selection: $meetingLocale) {
+                // The saved value always has a row of its own, even before the
+                // list has loaded and even if the model for it is no longer
+                // offered. Without it the picker would show some other language
+                // while the app went on using this one.
+                if !meetingLocales.contains(where: { $0.identifier == meetingLocale }) {
+                    Text(Self.languageName(meetingLocale)).tag(meetingLocale)
+                }
+                ForEach(meetingLocales, id: \.identifier) { locale in
+                    Text(Self.languageName(locale.identifier)).tag(locale.identifier)
+                }
+            }
+            .onChange(of: meetingLocale) { _, value in
+                Settings.shared.meetingLocale = value
+            }
+
+            Text("A meeting commits to one language and stays there. Dictation can "
+                 + "afford to retry a phrase in another locale; an hour of audio "
+                 + "cannot be transcribed twice.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text("Microphone").font(.headline)
+            Text("Meetings use the microphone chosen on the Speech tab — currently "
+                 + selectedMicrophoneName + ".")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text("Where meetings are saved").font(.headline)
+            HStack {
+                Text(NotesFM.defaultRoot.path)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Reveal") { revealMeetingsFolder() }
+            }
+            Text("Plain markdown, one file per meeting. Nothing here needs this app "
+                 + "to read it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Fn+R starts and stops a meeting. Fn+P pauses and resumes it — "
+                 + "pausing stops capture completely, and notes can still be added "
+                 + "while paused.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .task {
+            // Asked for rather than hardcoded: the installed set depends on the
+            // machine, and a list of languages the engine cannot actually do is
+            // worse than no list.
+            let supported = await SpeechTranscriber.supportedLocales
+            meetingLocales = supported.sorted {
+                Self.languageName($0.identifier).localizedCompare(Self.languageName($1.identifier)) == .orderedAscending
+            }
+        }
+    }
+
+    private var selectedMicrophoneName: String {
+        guard !micUID.isEmpty else {
+            return "the system default (" + AudioDevices.defaultInputName() + ")"
+        }
+        return microphones.first(where: { $0.id == micUID })?.name
+            ?? "a device that is not connected"
+    }
+
+    private func revealMeetingsFolder() {
+        let root = NotesFM.defaultRoot
+        // The folder is created on the first meeting, so it may not exist yet;
+        // revealing nothing would look like a bug rather than an empty library.
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: root.path)
+    }
+
+    private static func languageName(_ identifier: String) -> String {
+        let locale = Locale(identifier: identifier)
+        return Locale.current.localizedString(forIdentifier: identifier)
+            ?? locale.identifier
     }
 
     // MARK: Hotkeys
