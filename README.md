@@ -28,7 +28,7 @@ Supports **English and German**, switching automatically.
 One command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | zsh
 ```
 
 It checks your macOS version, architecture and toolchain first, so if your Mac

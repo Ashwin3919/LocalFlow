@@ -1,7 +1,7 @@
 #!/bin/zsh
 # One-command installer for LocalFlow.
 #
-#   curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | zsh
 #
 # or, from inside a clone:  ./install.sh
 #
@@ -14,8 +14,27 @@ CLONE_DIR="${LOCALFLOW_DIR:-$HOME/LocalFlow}"
 
 MIN_MACOS=26
 
-bold() { print -P "%B$1%b" }
-fail() { print -u2 ""; print -u2 "$1"; print -u2 ""; exit 1 }
+# Run under zsh, not sh.
+#
+# The whole point of the checks below is that a wrong machine gets a sentence
+# instead of a wall of output. Piping this into `sh` used to defeat that before
+# the first check ran: `print` is a zsh builtin, and sh rejects a function whose
+# closing brace has no `;` before it, so the script died on a syntax error.
+# People copy the command as printed, so it has to survive being run the wrong
+# way and say which way is right.
+if [ -z "${ZSH_VERSION:-}" ]; then
+    echo "" >&2
+    echo "Run this with zsh rather than sh:" >&2
+    echo "" >&2
+    echo "    curl -fsSL <the raw install.sh URL> | zsh" >&2
+    echo "" >&2
+    echo "Or, from inside a clone:  ./install.sh" >&2
+    echo "" >&2
+    exit 1
+fi
+
+bold() { print -P "%B$1%b"; }
+fail() { print -u2 ""; print -u2 "$1"; print -u2 ""; exit 1; }
 
 # ─── 1. macOS version ────────────────────────────────────────────────────────
 os_version="$(sw_vers -productVersion)"
