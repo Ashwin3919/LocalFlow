@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 // MARK: - The document
@@ -76,14 +77,23 @@ struct TranscribedSegment: Sendable, Hashable {
 /// which transcribes one finished buffer. Deliberately a separate protocol: the
 /// dictation path must keep working exactly as it does today, and a batch
 /// transcriber and a streaming one have genuinely different shapes.
+///
+/// Buffers are passed as `AVAudioPCMBuffer` in whatever format the hardware
+/// produced, not as `[Float]` at an assumed rate. Apple's analyzer performs **no
+/// audio conversion of its own** and rejects anything that is not exactly the
+/// format it asked for, so conversion has to happen in one place that knows what
+/// that format is — here — rather than being guessed at the capture end.
 protocol StreamingTranscriber: AnyObject, Sendable {
-    /// Segments as the engine produces them, volatile ones included.
+    /// Segments as the engine produces them. Volatile ones are included and
+    /// flagged, so a caller can show live text but persist only finalised text.
     var segments: AsyncStream<TranscribedSegment> { get }
 
     func start() async throws
-    /// Feed 16 kHz mono Float32 samples. `at` is seconds since session start.
-    func append(samples: [Float], at time: TimeInterval) async
-    /// Flush anything pending and stop. Safe to call twice.
+    /// Called from the audio thread. Must not block.
+    func append(_ buffer: AVAudioPCMBuffer)
+    /// Collapse the pending window so unfinalised state cannot accumulate.
+    func flush() async
+    /// Drain, finalise and stop. Safe to call twice.
     func finish() async
 }
 
@@ -91,17 +101,17 @@ protocol StreamingTranscriber: AnyObject, Sendable {
 
 /// Where a stream of meeting audio comes from.
 ///
-/// Implementations deliver 16 kHz mono Float32 on an unspecified thread — often
-/// a real-time audio thread, so callbacks must not allocate heavily, block, or
-/// touch the main actor synchronously.
+/// Buffers arrive on an unspecified thread, usually a real-time audio thread, so
+/// callbacks must not block or touch the main actor synchronously. The buffer is
+/// only valid for the duration of the call — copy anything you keep.
 protocol MeetingAudioSource: AnyObject {
     /// Human-readable, for logs and the UI.
     var name: String { get }
     /// Which side of the conversation this source represents.
     var speaker: Speaker { get }
+    var isRunning: Bool { get }
 
-    /// - Parameter onBuffer: samples, and seconds since `start` was called.
-    func start(onBuffer: @escaping @Sendable ([Float], TimeInterval) -> Void) throws
+    func start(onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws
     func stop()
 }
 
@@ -124,9 +134,10 @@ enum MeetingAudioError: LocalizedError {
 // MARK: - Shared constants
 
 enum NotesFM {
-    /// 16 kHz mono, matching what the speech engine wants and what dictation
-    /// already produces, so nothing has to resample twice.
-    static let sampleRate: Double = 16_000
+    /// Used only for the level meter and for sizing waveform history. The
+    /// speech engine dictates its own format via `bestAvailableAudioFormat`,
+    /// which is not necessarily this, so never assume it for transcription.
+    static let meterSampleRate: Double = 16_000
 
     /// Transcript is flushed to disk this often, so a crash or a dead battery
     /// costs at most this many seconds of a meeting.
