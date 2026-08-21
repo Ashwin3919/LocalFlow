@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>NotesFM transcribes the audio your Mac is playing so the other people in your call can be written down on this machine. Nothing is uploaded.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>LocalFlow records audio only while dictation is active and transcribes it locally.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

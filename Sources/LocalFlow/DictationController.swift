@@ -83,6 +83,11 @@ final class DictationController {
             }
             finishRecording()
 
+        case .toggleMeeting:
+            // Routed to NotesFM by the app delegate. Dictation deliberately
+            // knows nothing about meetings.
+            return
+
         case .toggleHandsFree:
             if state.isRecording {
                 finishRecording()

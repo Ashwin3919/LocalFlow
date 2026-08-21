@@ -26,6 +26,7 @@ final class Settings: @unchecked Sendable {
         case flowBarEnabled
         case autoPunctuate
         case hasCompletedSetup
+        case meetingLocale
     }
 
     private let defaults = UserDefaults.standard
@@ -33,6 +34,7 @@ final class Settings: @unchecked Sendable {
     private init() {
         defaults.register(defaults: [
             Key.hotkeyMode.rawValue: "fn",
+            Key.meetingLocale.rawValue: "en-US",
             Key.pushToTalkEnabled.rawValue: true,
             Key.handsFreeEnabled.rawValue: true,
             Key.tapToLock.rawValue: true,
@@ -133,6 +135,14 @@ final class Settings: @unchecked Sendable {
     var flowBarEnabled: Bool {
         get { defaults.bool(forKey: Key.flowBarEnabled.rawValue) }
         set { defaults.set(newValue, forKey: Key.flowBarEnabled.rawValue) }
+    }
+
+    /// Meetings pick one locale and stay there. Dictation can afford to retry the
+    /// other language on a bad guess because an utterance is short; a two-hour
+    /// meeting cannot be transcribed twice.
+    var meetingLocale: String {
+        get { defaults.string(forKey: Key.meetingLocale.rawValue) ?? "en-US" }
+        set { defaults.set(newValue, forKey: Key.meetingLocale.rawValue) }
     }
 
     /// Set once the user has been through the first-run permission guide, so it

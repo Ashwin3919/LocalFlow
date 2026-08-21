@@ -10,7 +10,7 @@ import AVFoundation
 /// Buffers are handed on in the hardware's own format. Resampling here would be
 /// wasted work — `MeetingTranscriber` has to convert to the analyzer's exact
 /// format anyway, and converting twice loses quality for nothing.
-final class MicMeetingSource: MeetingAudioSource {
+final class MicMeetingSource: MeetingAudioSource, @unchecked Sendable {
     let name = "Microphone"
     let speaker: Speaker = .you
 

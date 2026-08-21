@@ -130,7 +130,10 @@ struct NotesFMLibraryView: View {
     private var listBody: some View {
         let notes = visibleNotes
         if notes.isEmpty {
+            // Filling the column matters: an empty state that shrinks to its own
+            // size leaves the rest of the pane unpainted.
             emptyList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(selection: $selection.noteID) {
                 ForEach(notes) { note in
@@ -208,6 +211,8 @@ struct NotesFMLibraryView: View {
             } description: {
                 Text("Pick a meeting from the list to read or edit it.")
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
         }
     }
 }
@@ -238,7 +243,7 @@ private struct MeetingRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text(note.snippet)
+            Text(NotesFMFormat.plain(note.snippet))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -311,7 +316,7 @@ private struct MeetingDetailView: View {
             Button("Delete", role: .destructive) { delete() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes the meeting's markdown file.")
+            Text("The meeting's markdown file is moved to the Trash.")
         }
     }
 
@@ -423,7 +428,7 @@ private struct MeetingDetailView: View {
         // deliberately outlives the view — closing the window tears the view
         // down without an `onDisappear`, and the last keystrokes still have to
         // reach disk.
-        let store = store
+        let store = self.store
         var pending = note
         pending.body = body
         pendingSave = Task {
@@ -669,6 +674,16 @@ private struct MarkdownBlock: Identifiable {
 // MARK: - Formatting
 
 enum NotesFMFormat {
+    /// The list shows prose, not source, so the emphasis markers a transcript
+    /// puts around speaker names would only be noise there. Deliberately only
+    /// the two markers the transcript format actually uses — guessing at every
+    /// markdown construct would start mangling ordinary words.
+    static func plain(_ text: String) -> String {
+        text.replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     /// `nil` for a note that was never recorded, so callers can leave the slot
     /// empty instead of printing a meaningless "0 min".
     static func duration(_ seconds: TimeInterval) -> String? {

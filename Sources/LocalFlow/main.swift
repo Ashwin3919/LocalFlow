@@ -11,9 +11,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = DictationController(engine: AppleSpeechEngine())
     private let settingsWindow = SettingsWindowController()
     private let setupWindow = SetupWindowController()
+    private let meeting = MeetingSession()
+    private lazy var meetingHUD = MeetingHUDController(session: meeting)
+    private let notesWindow = NotesFMWindowController()
+    private let meetingLine = NSMenuItem(title: "Start Meeting", action: nil, keyEquivalent: "")
     private var lastWarnings: [String] = ["__unset__"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--notesfm-selftest") {
+            exit(NotesFMSelfTest.run())
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--notesfm-capture-test") {
+            let seconds = CommandLine.arguments.count > index + 1
+                ? Double(CommandLine.arguments[index + 1]) ?? 8
+                : 8
+            NotesFMCaptureTest.run(seconds: seconds)
+        }
         Log.startSession()
         Sound.preload()
         buildMenu()
@@ -29,7 +42,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { controller.isRecordingNow }
         }
         hotkeys.onAction = { [weak self] action in
-            Task { @MainActor in self?.controller.handle(action) }
+            Task { @MainActor in
+                guard let self else { return }
+                // Meetings are a separate mode, so the action is routed here
+                // rather than being taught to the dictation state machine.
+                if case .toggleMeeting = action {
+                    await self.toggleMeeting()
+                } else {
+                    self.controller.handle(action)
+                }
+            }
+        }
+
+        meeting.onFinished = { [weak self] identifier in
+            self?.meetingHUD.hide()
+            self?.renderMeetingState()
+            self?.notesWindow.show(selecting: identifier)
         }
         settingsWindow.onHotkeyModeChange = { [weak self] mode in
             self?.hotkeys.mode = mode
@@ -89,6 +117,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settings.target = self
         menu.addItem(settings)
+
+        meetingLine.action = #selector(toggleMeetingFromMenu)
+        meetingLine.target = self
+        menu.addItem(meetingLine)
+
+        let captureTest = NSMenuItem(
+            title: "Test Audio Capture…",
+            action: #selector(testCapture),
+            keyEquivalent: ""
+        )
+        captureTest.target = self
+        menu.addItem(captureTest)
+
+        let library = NSMenuItem(
+            title: "NotesFM Library…",
+            action: #selector(openNotes),
+            keyEquivalent: "l"
+        )
+        library.target = self
+        menu.addItem(library)
+
+        menu.addItem(.separator())
 
         let setup = NSMenuItem(
             title: "Setup Guide…",
@@ -288,6 +338,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func pasteLast() { controller.handle(.pasteLast) }
     @objc private func openSettings() { settingsWindow.show() }
+    @objc private func openNotes() { notesWindow.show() }
+
+    /// Ten seconds of both capture paths, reported plainly. Needed because the
+    /// System Audio Recording permission cannot be queried — the only way to
+    /// know it was granted is to capture and look at the samples.
+    @objc private func testCapture() {
+        let waiting = NSAlert()
+        waiting.messageText = "Testing audio capture"
+        waiting.informativeText = """
+            Listening for 10 seconds. Say something, and play a video or some \
+            music so there is system audio to capture too.
+
+            The result will appear here and in the log.
+            """
+        waiting.addButton(withTitle: "Start")
+        waiting.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard waiting.runModal() == .alertFirstButtonReturn else { return }
+
+        NotesFMCaptureTest.runInApp { text in
+            let result = NSAlert()
+            result.messageText = "Audio capture result"
+            result.informativeText = text
+            result.addButton(withTitle: "OK")
+            result.addButton(withTitle: "Open Permission Settings")
+            NSApp.activate(ignoringOtherApps: true)
+            if result.runModal() == .alertSecondButtonReturn {
+                self.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            }
+        }
+    }
+    @objc private func toggleMeetingFromMenu() { Task { await toggleMeeting() } }
+
+    private func toggleMeeting() async {
+        if meeting.isRunning {
+            await meeting.stop()
+        } else {
+            guard !controller.isRecordingNow else {
+                // One microphone, two features that both want it. Dictation is
+                // the shorter-lived of the two, so the meeting waits rather than
+                // stealing the mic out from under a sentence in progress.
+                notify(title: "NotesFM", body: "Finish dictating first, then press Fn+R.")
+                return
+            }
+            meetingHUD.show()
+            await meeting.start()
+            renderMeetingState()
+            if meeting.state == .idle { meetingHUD.hide() }
+        }
+        renderMeetingState()
+    }
+
+    private func renderMeetingState() {
+        meetingLine.title = meeting.isRunning ? "Stop Meeting  (Fn+R)" : "Start Meeting  (Fn+R)"
+    }
     @objc private func openSetup() { setupWindow.show() }
 
     /// Show the guide on a first launch, or on any launch where a permission is

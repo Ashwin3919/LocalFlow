@@ -17,6 +17,7 @@ final class HotkeyManager: @unchecked Sendable {
         case holdBegan
         case holdEnded(duration: TimeInterval)
         case toggleHandsFree
+        case toggleMeeting
         case lockHandsFree
         case cancel
         case pasteLast
@@ -25,6 +26,7 @@ final class HotkeyManager: @unchecked Sendable {
     private enum Keycode {
         static let space: Int64 = 49
         static let escape: Int64 = 53
+        static let r: Int64 = 15
         static let v: Int64 = 9
     }
 
@@ -167,6 +169,14 @@ final class HotkeyManager: @unchecked Sendable {
            flags.contains(.maskControl),
            !flags.contains(.maskAlternate) {
             emit(.pasteLast)
+            return true
+        }
+
+        // Trigger + R — start or stop a NotesFM meeting. A meeting is a separate
+        // mode from dictation rather than a variation of it: it captures system
+        // audio too, runs for hours, and writes to a file instead of typing.
+        if keycode == Keycode.r, triggerHeld(in: flags), !flags.contains(.maskCommand) {
+            emit(.toggleMeeting)
             return true
         }
 

@@ -55,9 +55,9 @@ final class SetupWindowController {
             Hold the Fn key, speak, let go — your words appear in whatever app \
             you are using. Everything happens on this Mac; nothing is uploaded.
 
-            macOS requires you to grant three permissions by hand. No app can do \
-            it for you, so this window walks you through them and ticks each one \
-            off as it takes effect.
+            macOS requires you to grant these by hand. No app can do it for you, \
+            so this window walks you through them and ticks each one off as it \
+            takes effect. The last two are optional.
             """)
         blurb.font = .systemFont(ofSize: 12.5)
         blurb.textColor = .secondaryLabelColor
@@ -95,6 +95,17 @@ final class SetupWindowController {
                 act: {
                     _ = CGRequestListenEventAccess()
                     Self.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+                }
+            ),
+            PermissionRow(
+                name: "System Audio Recording",
+                why: "Only for NotesFM meetings — so other people in a call can be transcribed.",
+                optional: true,
+                // There is no API to query this one, so it cannot show a real
+                // tick. It opens the right pane and says so rather than pretending.
+                check: { false },
+                act: {
+                    Self.open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
                 }
             ),
             PermissionRow(
@@ -241,7 +252,7 @@ private final class PermissionRow {
         glyph.font = .systemFont(ofSize: 15, weight: .bold)
         glyph.widthAnchor.constraint(equalToConstant: 18).isActive = true
 
-        let heading = NSTextField(labelWithString: optional ? "\(name) (recommended)" : name)
+        let heading = NSTextField(labelWithString: optional ? "\(name) — optional" : name)
         heading.font = .systemFont(ofSize: 13, weight: .medium)
 
         let reason = NSTextField(labelWithString: why)
