@@ -284,6 +284,50 @@ dictating never costs you what you had copied.
 
 ---
 
+## 5b. The flow bar waveform
+
+The first version drove all 14 bars from a **single** number — the loudest sample
+in the current buffer — multiplied by a fixed centre-heavy envelope. Every bar
+therefore moved in lockstep: a pulsing blob, not a waveform.
+
+The current version treats each bar as an independent moment in time.
+
+```mermaid
+flowchart LR
+    RT["render thread<br/><i>every ~43 ms</i>"] --> RMS["RMS of buffer"]
+    RMS --> GATE["gate: subtract<br/>noise floor 0.004"]
+    GATE --> COMP["compress:<br/>(x / 0.18) ^ 0.6"]
+    COMP --> RING["lock-guarded ring<br/>128 samples"]
+    RING --> READ["FlowBar timer<br/><i>30 fps</i>"]
+    READ --> EASE["per-bar ease<br/>toward target, 0.32"]
+    EASE --> DRAW["30 rounded bars,<br/>newest on the right"]
+
+    style RING fill:#2d5a8c,stroke:#1a3a5c,color:#fff
+```
+
+Four choices worth keeping:
+
+- **RMS, not peak.** Peak is dominated by plosives and clicks, which pins every
+  bar to full height. RMS tracks perceived loudness, so the shape on screen is
+  the shape of the sentence that produced it.
+- **A gate, so silence is actually still.** Below the noise floor the sample is
+  zero, which is what makes the bar sit motionless when you stop talking rather
+  than twitching on room noise. Quiet bars render as a row of dots at 30% alpha
+  so the resting state still looks deliberate.
+- **Compression.** Speech RMS lives around 0.02–0.15. A linear mapping would
+  keep every bar in the bottom fifth of the pill.
+- **Per-bar easing toward a target.** This, not the frame rate, is what stops it
+  strobing.
+
+The ring buffer is guarded by an `NSLock` rather than the recorder's serial
+queue: it is written from the audio render thread and read from the main thread,
+and a single array write must never wait behind queued audio work.
+
+States other than listening draw a slow travelling ripple instead, because a
+voice waveform with no microphone input would misrepresent what the app is doing.
+
+---
+
 ## 6. Cleanup pass — designed to be skippable
 
 The rule is **never let the polish step eat your words.** Every failure path
@@ -342,11 +386,11 @@ graph LR
     end
 
     subgraph au["com.localflow.audio"]
-        ACC["sample accumulation<br/>+ level smoothing"]
+        ACC["sample accumulation"]
     end
 
     subgraph rt["AVAudioEngine render thread"]
-        CONV["convert 48k → 16k,<br/>copy out, measure peak"]
+        CONV["convert 48k → 16k, copy out,<br/>RMS → lock-guarded ring"]
     end
 
     subgraph sc["Swift concurrency"]
@@ -366,7 +410,7 @@ graph LR
     ST --> ACT
     ST --> HTTP
     CONV --> ACC
-    ACC --> UI
+    CONV --> UI
     ST --> LOG
     ST --> HST
 
@@ -516,13 +560,13 @@ automatically and falls back to ad-hoc if it is absent.
 | `main.swift` | `AppDelegate`: menu bar, permission requests and warnings, trigger auto-selection |
 | `DictationController.swift` | the state machine; the only file that knows the whole flow |
 | `HotkeyManager.swift` | the single `CGEventTap`; event classification and consumption |
-| `AudioRecorder.swift` | `AVAudioEngine` → 16 kHz mono Float32, prewarming, level metering |
+| `AudioRecorder.swift` | `AVAudioEngine` → 16 kHz mono Float32, prewarming, RMS level history |
 | `AudioDevices.swift` | CoreAudio enumeration, UID → `AudioDeviceID` |
 | `TranscriptionEngine.swift` | the swap point — 3 methods |
 | `AppleSpeechEngine.swift` | `SpeechAnalyzer` backend, bilingual retry |
 | `TextInserter.swift` | AX insertion, pasteboard + Cmd+V fallback, clipboard restore |
 | `Cleanup.swift` | Ollama client, timeout, plausibility gate, fallback |
-| `FlowBar.swift` | non-activating `NSPanel`, level meter |
+| `FlowBar.swift` | non-activating `NSPanel`, frosted pill, scrolling waveform |
 | `SettingsWindowController.swift` | SwiftUI settings, launch-at-login |
 | `Settings.swift` | `UserDefaults` wrapper, defaults, custom dictionary parsing |
 | `History.swift` | JSONL transcript log in Application Support |

@@ -35,8 +35,9 @@ final class DictationController {
 
     init(engine: any TranscriptionEngine) {
         self.engine = engine
-        flowBar.levelProvider = { [weak self] in self?.recorder.level ?? 0 }
-        recorder.onLevel = { _ in }
+        flowBar.levelsProvider = { [weak self] count in
+            self?.recorder.recentLevels(count) ?? []
+        }
     }
 
     var isRecordingNow: Bool { state.isRecording }

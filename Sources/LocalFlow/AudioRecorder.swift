@@ -42,10 +42,22 @@ final class AudioRecorder: @unchecked Sendable {
     private var isRecording = false
     private var tapInstalled = false
 
-    /// Peak level of the most recent buffer, 0...1. Read by the flow bar.
-    private(set) var level: Float = 0
+    /// Rolling history of normalised loudness, newest last. The flow bar reads
+    /// this to draw a real travelling waveform rather than one pulsing value.
+    ///
+    /// Written from the audio render thread and read from the main thread, so it
+    /// is guarded by a lock rather than the recorder's serial queue — the
+    /// critical section is a single array write and must not wait on audio work.
+    private let historyLock = NSLock()
+    private static let historyCapacity = 128
+    private var history = [Float](repeating: 0, count: AudioRecorder.historyCapacity)
+    private var historyIndex = 0
 
-    var onLevel: (@Sendable (Float) -> Void)?
+    /// Anything quieter than this is treated as silence, so the waveform sits
+    /// still when you are not speaking instead of twitching on room noise.
+    private static let noiseFloor: Float = 0.004
+    /// RMS that maps to a full-height bar.
+    private static let fullScale: Float = 0.18
 
     var isActive: Bool { queue.sync { isRecording } }
 
@@ -105,6 +117,7 @@ final class AudioRecorder: @unchecked Sendable {
             }
 
             samples.removeAll(keepingCapacity: true)
+            resetHistory()
 
             if !tapInstalled {
                 input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) {
@@ -139,8 +152,7 @@ final class AudioRecorder: @unchecked Sendable {
                 tapInstalled = false
             }
             engine.stop()
-            level = 0
-            onLevel?(0)
+            resetHistory()
 
             let captured = samples
             samples.removeAll(keepingCapacity: true)
@@ -189,21 +201,55 @@ final class AudioRecorder: @unchecked Sendable {
         // buffer is reused once this callback returns.
         let chunk = Array(UnsafeBufferPointer(start: channel, count: count))
 
-        var peak: Float = 0
-        for value in chunk {
-            let magnitude = abs(value)
-            if magnitude > peak { peak = magnitude }
-        }
+        // RMS, not peak: peak is dominated by transients and makes every bar
+        // look the same height. RMS tracks perceived loudness, which is what
+        // makes the waveform look like the speech that produced it.
+        var sumOfSquares: Float = 0
+        for value in chunk { sumOfSquares += value * value }
+        let rms = (sumOfSquares / Float(count)).squareRoot()
+
+        // Gate, then compress. Speech RMS lives around 0.02-0.15, so a linear
+        // mapping would keep every bar in the bottom fifth of the pill.
+        let gated = max(0, rms - AudioRecorder.noiseFloor)
+        let normalised = min(1, pow(gated / AudioRecorder.fullScale, 0.6))
+        push(level: normalised)
 
         queue.async { [weak self] in
             guard let self, self.isRecording else { return }
             let limit = Int(AudioRecorder.sampleRate * AudioRecorder.maximumDuration)
             guard self.samples.count < limit else { return }
             self.samples.append(contentsOf: chunk)
-            // Smooth the meter so the flow bar does not strobe.
-            self.level = max(peak, self.level * 0.75)
-            self.onLevel?(min(1, self.level * 3))
         }
+    }
+
+    // MARK: - Level history
+
+    private func push(level: Float) {
+        historyLock.lock()
+        history[historyIndex] = level
+        historyIndex = (historyIndex + 1) % history.count
+        historyLock.unlock()
+    }
+
+    private func resetHistory() {
+        historyLock.lock()
+        for index in history.indices { history[index] = 0 }
+        historyIndex = 0
+        historyLock.unlock()
+    }
+
+    /// The last `count` loudness samples, oldest first, newest last.
+    func recentLevels(_ count: Int) -> [Float] {
+        historyLock.lock()
+        defer { historyLock.unlock() }
+        let capacity = history.count
+        var out = [Float](repeating: 0, count: count)
+        for offset in 0..<count {
+            let stepsBack = count - offset
+            let index = ((historyIndex - stepsBack) % capacity + capacity) % capacity
+            out[offset] = history[index]
+        }
+        return out
     }
 
     /// Point the engine's input node at the microphone chosen in Settings.
