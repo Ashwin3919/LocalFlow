@@ -588,6 +588,7 @@ automatically and falls back to ad-hoc if it is absent.
 | `TextInserter.swift` | AX insertion, pasteboard + Cmd+V fallback, clipboard restore |
 | `Cleanup.swift` | Ollama client, timeout, plausibility gate, fallback |
 | `FlowBar.swift` | non-activating transparent `NSPanel`, theme-adaptive scrolling waveform |
+| `SetupWindow.swift` | first-run permission guide, plain AppKit, live-polled status |
 | `SettingsWindowController.swift` | SwiftUI settings, launch-at-login |
 | `Settings.swift` | `UserDefaults` wrapper, defaults, custom dictionary parsing |
 | `History.swift` | JSONL transcript log in Application Support |

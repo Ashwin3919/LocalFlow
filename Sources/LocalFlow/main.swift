@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeys = HotkeyManager()
     private let controller = DictationController(engine: AppleSpeechEngine())
     private let settingsWindow = SettingsWindowController()
+    private let setupWindow = SetupWindowController()
     private var lastWarnings: [String] = ["__unset__"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         chooseHotkeyMode()
         startEventTap()
         refreshWarnings()
+        presentSetupIfNeeded()
 
         Task { await controller.prepare() }
     }
@@ -87,6 +89,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settings.target = self
         menu.addItem(settings)
+
+        let setup = NSMenuItem(
+            title: "Setup Guide…",
+            action: #selector(openSetup),
+            keyEquivalent: ""
+        )
+        setup.target = self
+        menu.addItem(setup)
 
         let permissions = NSMenu()
         for (title, selector) in [
@@ -278,6 +288,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func pasteLast() { controller.handle(.pasteLast) }
     @objc private func openSettings() { settingsWindow.show() }
+    @objc private func openSetup() { setupWindow.show() }
+
+    /// Show the guide on a first launch, or on any launch where a permission is
+    /// still missing and the user has not already chosen to skip it. Someone who
+    /// has everything granted never sees it.
+    private func presentSetupIfNeeded() {
+        // --setup forces the guide open regardless of state. Useful for testing
+        // the window on a machine where everything is already granted.
+        if CommandLine.arguments.contains("--setup") {
+            setupWindow.show()
+            return
+        }
+        guard !SetupWindowController.isComplete else {
+            Settings.shared.hasCompletedSetup = true
+            return
+        }
+        guard !Settings.shared.hasCompletedSetup else { return }
+        setupWindow.onFinished = { [weak self] in
+            self?.startEventTap()
+            self?.refreshWarnings()
+        }
+        setupWindow.show()
+    }
 
     @objc private func openRelevantSettings() {
         if !AXIsProcessTrusted() { openAccessibilitySettings() }

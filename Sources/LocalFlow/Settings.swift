@@ -25,6 +25,7 @@ final class Settings: @unchecked Sendable {
         case microphoneUID
         case flowBarEnabled
         case autoPunctuate
+        case hasCompletedSetup
     }
 
     private let defaults = UserDefaults.standard
@@ -132,5 +133,12 @@ final class Settings: @unchecked Sendable {
     var flowBarEnabled: Bool {
         get { defaults.bool(forKey: Key.flowBarEnabled.rawValue) }
         set { defaults.set(newValue, forKey: Key.flowBarEnabled.rawValue) }
+    }
+
+    /// Set once the user has been through the first-run permission guide, so it
+    /// does not reappear on every launch after they have chosen to skip it.
+    var hasCompletedSetup: Bool {
+        get { defaults.bool(forKey: Key.hasCompletedSetup.rawValue) }
+        set { defaults.set(newValue, forKey: Key.hasCompletedSetup.rawValue) }
     }
 }
