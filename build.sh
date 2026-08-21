@@ -9,6 +9,20 @@ BUILD_DIR="$ROOT/.build"
 APP="$BUILD_DIR/LocalFlow.app"
 BUNDLE_ID="com.localflow.app"
 
+# Fail with a sentence rather than a page of compiler errors. The engine is
+# macOS 26-only; see install.sh for the long explanation.
+OS_MAJOR="$(sw_vers -productVersion)"; OS_MAJOR="${OS_MAJOR%%.*}"
+if (( OS_MAJOR < 26 )); then
+    echo "LocalFlow needs macOS 26 or later (this Mac is on $(sw_vers -productVersion))." >&2
+    echo "It transcribes with SpeechTranscriber, which does not exist before macOS 26." >&2
+    exit 1
+fi
+if [[ "$(uname -m)" != "arm64" ]]; then
+    echo "LocalFlow needs Apple Silicon (this Mac reports $(uname -m))." >&2
+    echo "Apple's on-device speech models are not available on Intel hardware." >&2
+    exit 1
+fi
+
 echo "==> Compiling (release)"
 swift build --package-path "$ROOT" -c release
 

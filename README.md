@@ -25,7 +25,17 @@ Supports **English and German**, switching automatically.
 
 ## Install
 
-Three commands. Takes about a minute.
+One command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | sh
+```
+
+It checks your macOS version, architecture and toolchain first, so if your Mac
+cannot run it you get one clear sentence instead of a page of compiler errors.
+Then it clones, signs, builds, installs to `/Applications` and launches.
+
+Or do it by hand, which is the same three steps:
 
 ```sh
 git clone <this-repo> LocalFlow && cd LocalFlow
@@ -33,8 +43,22 @@ git clone <this-repo> LocalFlow && cd LocalFlow
 ./build.sh install      # builds, signs, copies to /Applications, launches
 ```
 
-That is it. A **LocalFlow Setup** window opens and walks you through the three
+Either way, a **LocalFlow Setup** window opens and walks you through the three
 permissions macOS requires. Grant them and start talking.
+
+### If your Mac is not supported
+
+**macOS 26 is a hard requirement, not a preference.** The app transcribes with
+`SpeechTranscriber`, Apple's on-device speech engine, which does not exist in
+earlier versions — and that engine is precisely why the app is 740 KB rather
+than 600 MB, because there is no bundled model to fall back on.
+
+Every Apple Silicon Mac *can* run macOS 26, so for M1 and later this is a
+software update, not a hardware limit. Intel Macs cannot run the engine at all.
+
+Supporting older versions means writing a second engine behind the existing
+`TranscriptionEngine` protocol — `SFSpeechRecognizer` for macOS 13+, or
+whisper.cpp. `NOTES.md` covers the trade-offs. Nothing outside one file changes.
 
 <details>
 <summary>What <code>make-cert.sh</code> does, and why you need it</summary>
