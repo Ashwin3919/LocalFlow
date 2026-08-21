@@ -315,7 +315,7 @@ Four choices worth keeping:
   than twitching on room noise. Quiet bars render as a row of dots at 30% alpha
   so the resting state still looks deliberate.
 - **Compression.** Speech RMS lives around 0.02–0.15. A linear mapping would
-  keep every bar in the bottom fifth of the pill.
+  keep every bar in the bottom fifth of the bar's travel.
 - **Per-bar easing toward a target.** This, not the frame rate, is what stops it
   strobing.
 
@@ -323,8 +323,29 @@ The ring buffer is guarded by an `NSLock` rather than the recorder's serial
 queue: it is written from the audio render thread and read from the main thread,
 and a single array write must never wait behind queued audio work.
 
-States other than listening draw a slow travelling ripple instead, because a
-voice waveform with no microphone input would misrepresent what the app is doing.
+### No panel, no captions
+
+There is no background panel behind the waveform. The window is fully
+transparent with `hasShadow = false`, so a red dot and a row of bars sit
+directly on the desktop. An earlier build used an `NSVisualEffectView` frosted
+capsule; with a dot at one end it read as a UI toggle switch rather than as
+something floating.
+
+Two consequences that had to be handled:
+
+- **Ink is resolved per frame** from `effectiveAppearance.bestMatch(from:
+  [.aqua, .darkAqua])` — black on light, white on dark. Resolving inside `draw`
+  rather than caching means an appearance change is picked up on the next of the
+  30 frames per second, with no observer to keep in sync.
+- **A halo replaces the panel's contrast.** Without a backdrop, black ink over a
+  dark terminal would vanish. Every fill is drawn under an `NSShadow` in the
+  opposite colour at 45% alpha, blur 4, zero offset.
+
+The success path shows **no text at all**. Release-to-inserted is ~290 ms, so a
+"Transcribing" label appears and disappears faster than it can be read; the bar
+just fades out. Only the failure paths — cancelled, no audio, no speech,
+transcription failed — bring it back with a centred message, which is why
+`FlowBar.State` has a single case and text arrives solely through `flash`.
 
 ---
 
@@ -566,7 +587,7 @@ automatically and falls back to ad-hoc if it is absent.
 | `AppleSpeechEngine.swift` | `SpeechAnalyzer` backend, bilingual retry |
 | `TextInserter.swift` | AX insertion, pasteboard + Cmd+V fallback, clipboard restore |
 | `Cleanup.swift` | Ollama client, timeout, plausibility gate, fallback |
-| `FlowBar.swift` | non-activating `NSPanel`, frosted pill, scrolling waveform |
+| `FlowBar.swift` | non-activating transparent `NSPanel`, theme-adaptive scrolling waveform |
 | `SettingsWindowController.swift` | SwiftUI settings, launch-at-login |
 | `Settings.swift` | `UserDefaults` wrapper, defaults, custom dictionary parsing |
 | `History.swift` | JSONL transcript log in Application Support |

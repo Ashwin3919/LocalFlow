@@ -1,31 +1,26 @@
 import AppKit
 
-/// The small floating pill shown near the bottom of the screen while dictating.
+/// The floating waveform shown while dictating.
 ///
-/// It must never take keyboard focus away from the app being dictated into, so
-/// it is a `.nonactivatingPanel` that explicitly refuses to become key or main.
+/// There is deliberately no background panel — just a dot and a row of bars
+/// drawn straight onto the desktop, so it reads as floating rather than as a
+/// piece of chrome sliding in. It must never take keyboard focus away from the
+/// app being dictated into, so it is a `.nonactivatingPanel` that explicitly
+/// refuses to become key or main.
 @MainActor
 final class FlowBar {
     enum State: Equatable {
         case listening(locked: Bool)
-        case transcribing
-        case cleaning
-
-        var caption: String? {
-            switch self {
-            case .listening: nil          // the waveform speaks for itself
-            case .transcribing: "Transcribing"
-            case .cleaning: "Polishing"
-            }
-        }
     }
 
-    static let size = NSSize(width: 224, height: 44)
+    static let size = NSSize(width: 236, height: 44)
 
     private var panel: NonActivatingPanel?
-    private var effect: NSVisualEffectView?
     private let content = WaveformView()
     private var frameTimer: Timer?
+    /// Invalidates an in-flight fade-out so a `flash` arriving mid-hide is not
+    /// ordered off screen by the previous hide's completion handler.
+    private var hideToken = 0
 
     /// Supplies the newest `n` loudness samples, oldest first.
     var levelsProvider: ((Int) -> [Float])?
@@ -34,21 +29,28 @@ final class FlowBar {
         guard Settings.shared.flowBarEnabled else { return }
         content.apply(state: state)
         present()
-        startAnimating(for: state)
+        startAnimating()
     }
 
     func hide() {
         stopAnimating()
         guard let panel else { return }
+        hideToken += 1
+        let token = hideToken
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             panel.animator().alphaValue = 0
-        } completionHandler: { [weak panel] in
-            panel?.orderOut(nil)
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hideToken == token else { return }
+                self.panel?.orderOut(nil)
+            }
         }
     }
 
-    /// Briefly show a message, then fade out. Used for errors and cancellations.
+    /// Briefly show a message, then fade out. Used for errors and cancellations
+    /// only — the success path never shows text, because it finishes faster
+    /// than a label can be read.
     func flash(_ message: String, seconds: TimeInterval = 1.3) {
         guard Settings.shared.flowBarEnabled else { return }
         content.applyMessage(message)
@@ -65,6 +67,7 @@ final class FlowBar {
     private func present() {
         if panel == nil { build() }
         position()
+        hideToken += 1          // cancel any pending fade-out
         panel?.alphaValue = 0
         panel?.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
@@ -85,30 +88,17 @@ final class FlowBar {
         panel.level = .statusBar
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        // No window shadow: with a fully transparent window the shadow traces
+        // the alpha of the bars themselves, which reads as fuzz, not depth.
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
-        // A frosted background reads as part of macOS and adapts to light and
-        // dark automatically, which a flat fill does not.
-        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: Self.size))
-        effect.material = .hudWindow
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = Self.size.height / 2
-        effect.layer?.cornerCurve = .continuous
-        effect.layer?.masksToBounds = true
-        effect.autoresizingMask = [.width, .height]
-
-        content.frame = effect.bounds
+        content.frame = NSRect(origin: .zero, size: Self.size)
         content.autoresizingMask = [.width, .height]
-        effect.addSubview(content)
-
-        panel.contentView = effect
+        panel.contentView = content
         self.panel = panel
-        self.effect = effect
     }
 
     private func position() {
@@ -125,19 +115,14 @@ final class FlowBar {
 
     // MARK: - Animation
 
-    private func startAnimating(for state: State) {
+    private func startAnimating() {
         stopAnimating()
         // 30 fps is smooth to the eye and cheap: ~30 rounded rects per frame,
         // and it only runs while the bar is on screen.
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if case .listening = state {
-                    let levels = self.levelsProvider?(WaveformView.barCount) ?? []
-                    self.content.push(levels: levels)
-                } else {
-                    self.content.advanceIndeterminate()
-                }
+                self.content.push(levels: self.levelsProvider?(WaveformView.barCount) ?? [])
                 self.content.needsDisplay = true
             }
         }
@@ -176,21 +161,16 @@ private final class WaveformView: NSView {
     private var displayed = [CGFloat](repeating: 0, count: WaveformView.barCount)
     private var target = [CGFloat](repeating: 0, count: WaveformView.barCount)
 
-    private var caption: String?
     private var isLocked = false
-    private var indeterminatePhase: CGFloat = 0
     private(set) var currentMessage: String?
 
     override var isFlipped: Bool { false }
-    // Vibrancy blends fills into the frosted backdrop, which mutes the blue and
-    // cyan into grey. The caption still uses an adaptive system colour.
     override var allowsVibrancy: Bool { false }
 
     // MARK: State
 
     func apply(state: FlowBar.State) {
         currentMessage = nil
-        caption = state.caption
         if case .listening(let locked) = state {
             isLocked = locked
         }
@@ -198,7 +178,6 @@ private final class WaveformView: NSView {
 
     func applyMessage(_ message: String) {
         currentMessage = message
-        caption = message
         target = [CGFloat](repeating: 0, count: Self.barCount)
     }
 
@@ -208,55 +187,53 @@ private final class WaveformView: NSView {
         for index in 0..<Self.barCount {
             target[index] = CGFloat(levels[index])
         }
-        ease()
-    }
-
-    /// A slow travelling ripple for states where there is no microphone input,
-    /// so "working on it" looks different from "listening to you".
-    func advanceIndeterminate() {
-        indeterminatePhase += 0.16
-        for index in 0..<Self.barCount {
-            let position = CGFloat(index) / CGFloat(Self.barCount - 1)
-            let wave = sin(position * .pi * 2.2 - indeterminatePhase)
-            // Fade the ripple out at both ends so it does not look clipped.
-            let envelope = sin(position * .pi)
-            target[index] = max(0, wave) * envelope * 0.32
-        }
-        ease()
-    }
-
-    private func ease() {
         for index in 0..<Self.barCount {
             displayed[index] += (target[index] - displayed[index]) * 0.32
         }
     }
 
+    // MARK: Theme
+
+    /// White ink on dark, black ink on light. Resolved per frame rather than
+    /// cached, so switching appearance takes effect on the next redraw with no
+    /// observer to keep in sync.
+    private var ink: NSColor {
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .white
+            : .black
+    }
+
+    /// A soft halo in the opposite colour. Without the old frosted panel the
+    /// bars sit directly on whatever is behind them, so black ink over a dark
+    /// terminal would otherwise vanish.
+    private func applyHalo() {
+        let shadow = NSShadow()
+        shadow.shadowColor = (ink == .white ? NSColor.black : NSColor.white)
+            .withAlphaComponent(0.45)
+        shadow.shadowBlurRadius = 4
+        shadow.shadowOffset = .zero
+        shadow.set()
+    }
+
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // A caption replaces the waveform entirely — a wave with no audio
-        // behind it would be lying about what the app is doing.
-        if let caption, currentMessage != nil {
-            drawCentred(caption)
+        if let currentMessage {
+            drawCentred(currentMessage)
             return
         }
 
-        let dotX: CGFloat = 16
+        let dotX: CGFloat = 14
+        NSGraphicsContext.saveGraphicsState()
+        applyHalo()
         drawStateDot(at: NSPoint(x: dotX, y: bounds.midY))
-
-        var waveRect = NSRect(
-            x: dotX + 14,
+        drawWaveform(in: NSRect(
+            x: dotX + 16,
             y: bounds.minY,
-            width: bounds.maxX - (dotX + 14) - 16,
+            width: bounds.maxX - (dotX + 16) - 14,
             height: bounds.height
-        )
-
-        if let caption {
-            let captionWidth = drawCaption(caption, rightAlignedIn: bounds)
-            waveRect.size.width -= captionWidth + 10
-        }
-
-        drawWaveform(in: waveRect)
+        ))
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawStateDot(at centre: NSPoint) {
@@ -265,7 +242,8 @@ private final class WaveformView: NSView {
             x: centre.x - radius, y: centre.y - radius,
             width: radius * 2, height: radius * 2
         )
-        // Amber while hands-free is locked, so the mode is visible at a glance.
+        // Amber while hands-free is locked, so "the mic is still live" is
+        // visible at a glance; red for ordinary push-to-talk.
         let colour = isLocked
             ? NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.23, alpha: 1)
             : NSColor(calibratedRed: 1.0, green: 0.35, blue: 0.36, alpha: 1)
@@ -277,6 +255,7 @@ private final class WaveformView: NSView {
         let stride = barWidth + barGap
         let totalWidth = CGFloat(Self.barCount) * stride - barGap
         let startX = rect.minX + max(0, (rect.width - totalWidth) / 2)
+        let base = ink
 
         for index in 0..<Self.barCount {
             let amplitude = max(0, min(1, displayed[index]))
@@ -290,7 +269,9 @@ private final class WaveformView: NSView {
                 width: barWidth,
                 height: height
             )
-            colour(forBar: index, amplitude: amplitude).setFill()
+            // Quiet bars sit back rather than disappearing, so the row still
+            // looks deliberate when you are not speaking.
+            base.withAlphaComponent(0.28 + 0.72 * amplitude).setFill()
             NSBezierPath(
                 roundedRect: bar,
                 xRadius: barWidth / 2,
@@ -299,40 +280,19 @@ private final class WaveformView: NSView {
         }
     }
 
-    /// Blue on the left easing to cyan on the right — the same family as the
-    /// waveform glyph in the menu bar, so the two read as one app.
-    private func colour(forBar index: Int, amplitude: CGFloat) -> NSColor {
-        let position = CGFloat(index) / CGFloat(Self.barCount - 1)
-        let from = NSColor(calibratedRed: 0.35, green: 0.55, blue: 1.00, alpha: 1)
-        let to = NSColor(calibratedRed: 0.36, green: 0.86, blue: 0.98, alpha: 1)
-        let blended = from.blended(withFraction: position, of: to) ?? to
-        // Quiet bars sit back rather than disappearing, so the row of dots
-        // still looks deliberate when you are not speaking.
-        let alpha = 0.30 + 0.70 * amplitude
-        return blended.withAlphaComponent(alpha)
-    }
-
-    @discardableResult
-    private func drawCaption(_ text: String, rightAlignedIn rect: NSRect) -> CGFloat {
-        let attributes = Self.captionAttributes
-        let size = (text as NSString).size(withAttributes: attributes)
-        let origin = NSPoint(x: rect.maxX - size.width - 16, y: rect.midY - size.height / 2)
-        (text as NSString).draw(at: origin, withAttributes: attributes)
-        return size.width
-    }
-
     private func drawCentred(_ text: String) {
-        let attributes = Self.captionAttributes
+        NSGraphicsContext.saveGraphicsState()
+        applyHalo()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
+            .foregroundColor: ink.withAlphaComponent(0.85)
+        ]
         let size = (text as NSString).size(withAttributes: attributes)
         let origin = NSPoint(
             x: bounds.midX - size.width / 2,
             y: bounds.midY - size.height / 2
         )
         (text as NSString).draw(at: origin, withAttributes: attributes)
+        NSGraphicsContext.restoreGraphicsState()
     }
-
-    private static let captionAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
-        .foregroundColor: NSColor.secondaryLabelColor
-    ]
 }

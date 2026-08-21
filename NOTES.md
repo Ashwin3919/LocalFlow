@@ -49,7 +49,7 @@ DictationController   @MainActor state machine: idle / recording / transcribing
       ├── AppleSpeechEngine  TranscriptionEngine protocol
       ├── Cleanup            optional Ollama, 3 s timeout, always falls back
       ├── TextInserter       AXUIElement first, pasteboard + Cmd+V fallback
-      ├── FlowBar            non-activating NSPanel with a live level meter
+      ├── FlowBar            transparent non-activating NSPanel, live waveform
       └── History            JSONL in ~/Library/Application Support/LocalFlow/
 ```
 

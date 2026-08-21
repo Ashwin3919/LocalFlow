@@ -128,7 +128,10 @@ final class DictationController {
     private func finishRecording() {
         guard state.isRecording else { return }
         state = .transcribing
-        flowBar.show(.transcribing)
+        // No "Transcribing" indicator: the round trip finishes in ~200 ms, so a
+        // label would flash by unread. The bar simply goes away, and only the
+        // failure paths below bring it back with a message.
+        flowBar.hide()
 
         pipeline.async { [recorder] in
             let samples = recorder.stop()
@@ -183,7 +186,6 @@ final class DictationController {
 
         var final = trimmed
         if Settings.shared.cleanupEnabled {
-            flowBar.show(.cleaning)
             final = await Cleanup.polish(trimmed)
         }
 
