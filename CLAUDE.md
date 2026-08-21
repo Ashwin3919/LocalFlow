@@ -67,7 +67,7 @@ Sources/LocalFlow/NotesFM/
 
 ## Decisions that will look wrong until you know why
 
-**Apple `SpeechTranscriber`, not whisper.cpp.** The model is system-owned, so it sits outside the app's RSS: 740 KB app, 53 MB resident, versus ~600 MB for a bundled model. German is also a first-class locale, which Parakeet's is not. Cost: macOS 26 + Apple Silicon only, hard-gated in `install.sh`, `build.sh` and `LSMinimumSystemVersion`.
+**Apple `SpeechTranscriber`, not whisper.cpp.** The model is system-owned, so it sits outside the app's RSS: 1.8 MB bundle, ~49 MB resident, versus ~600 MB for a bundled model. German is also a first-class locale, which Parakeet's is not. Cost: macOS 26 + Apple Silicon only, hard-gated in `install.sh`, `build.sh` and `LSMinimumSystemVersion`.
 
 **The microphone opens per dictation, not continuously.** The brief asked for both an always-live tap and a mic that is not held open. Those contradict — installing the tap is what lights the orange indicator. Privacy won; latency was bought back with `prewarm()`. Consequence: no pre-roll ring buffer, so a too-short press locks into hands-free instead of being discarded.
 
@@ -107,8 +107,8 @@ Sources/LocalFlow/NotesFM/
 
 | | |
 |---|---|
-| App on disk | 740 KB |
-| Idle RSS | 53 MB (71 MB after Settings opens once — SwiftUI, non-returning) |
+| App on disk | 1.8 MB bundle (1792 KB binary) — the 740 KB in earlier notes was stale well before pause was added; the pre-pause binary measured 1656 KB |
+| Idle RSS | 49 MB (71 MB after Settings opens once — SwiftUI, non-returning) |
 | Idle CPU | 0.0% sustained |
 | ASR warm-load | 88–107 ms (vs the 8–10 s cold start this replaces) |
 | Release → text visible | ~290 ms |
@@ -119,6 +119,19 @@ Sources/LocalFlow/NotesFM/
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
 **Verified:** dictation end to end; `--notesfm-selftest` 43/43 — durability, markdown round trip, note stamping and the whole pause clock; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+
+**Verified: the installer path.** Rehearsed end to end from a clean clone —
+`install.sh` → checks → existing cert detected → release build → bundle → sign →
+`/Applications` → launch, then `--notesfm-selftest` from the installed binary.
+Accessibility and Input Monitoring survived being rebuilt from a *different
+directory*, which is the claim the `make-cert.sh` decision rests on and had not
+been demonstrated before. Piping the script into `sh` now fails with the
+corrected command instead of a syntax error.
+
+**Blocked on one thing only:** `install.sh` and `README.md` still say `<you>`
+where the GitHub owner goes, and there is no git remote — nothing has ever been
+pushed. The one-liner cannot work until both are filled in and the repo is
+public.
 
 **Not verified — do not claim these work:**
 - Any real system-audio capture. The permission has never been granted on this machine.

@@ -50,7 +50,7 @@ permissions macOS requires. Grant them and start talking.
 
 **macOS 26 is a hard requirement, not a preference.** The app transcribes with
 `SpeechTranscriber`, Apple's on-device speech engine, which does not exist in
-earlier versions — and that engine is precisely why the app is 740 KB rather
+earlier versions — and that engine is precisely why the app is under 2 MB rather
 than 600 MB, because there is no bundled model to fall back on.
 
 Every Apple Silicon Mac *can* run macOS 26, so for M1 and later this is a

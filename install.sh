@@ -36,6 +36,23 @@ fi
 bold() { print -P "%B$1%b"; }
 fail() { print -u2 ""; print -u2 "$1"; print -u2 ""; exit 1; }
 
+# Catch a repo URL that was never filled in.
+#
+# Only reachable when this script is fetched on its own, since running it inside
+# a clone never consults REPO. Without this the user gets git's "does not appear
+# to be a git repository" about a URL containing a literal `<you>`, which reads
+# like their network is broken rather than like the link they were given is
+# unfinished.
+if [[ "$REPO" == *"<you>"* && ! -f "./Package.swift" ]]; then
+    fail "This copy of install.sh still has a placeholder where the repository URL goes.
+
+Whoever published it needs to replace <you> in the REPO line with the real
+GitHub path, or you can point this run at the right one yourself:
+
+    LOCALFLOW_REPO=https://github.com/OWNER/LocalFlow.git
+    curl -fsSL <the raw install.sh URL> | LOCALFLOW_REPO=\$LOCALFLOW_REPO zsh"
+fi
+
 # ─── 1. macOS version ────────────────────────────────────────────────────────
 os_version="$(sw_vers -productVersion)"
 os_major="${os_version%%.*}"
@@ -45,7 +62,7 @@ if (( os_major < MIN_MACOS )); then
 
 It transcribes using SpeechTranscriber, Apple's on-device speech engine, which
 was introduced in macOS ${MIN_MACOS} and simply does not exist before it. That engine is
-also the reason the app is 740 KB instead of 600 MB — there is no bundled
+also the reason the app is under 2 MB instead of 600 MB — there is no bundled
 speech model to fall back on, by design.
 
 Every Apple Silicon Mac can run macOS ${MIN_MACOS}: System Settings → General →
