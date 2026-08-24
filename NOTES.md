@@ -182,6 +182,21 @@ somebody's words in it.
   `kAudioOutputUnitProperty_CurrentDevice` on the input node's audio unit before
   the engine starts, resolving the saved UID through CoreAudio in
   `AudioDevices.swift`. Falls back to the system default and logs if that fails.
+- **A free-text field holding the name of the notes engine** — the obvious design,
+  and it cannot work. Checked against the CLIs installed here rather than assumed:
+  `codex` wants the prompt on stdin and writes its answer to a file, `claude -p`
+  and `cursor-agent -p` answer on stdout, and each has a differently-named flag
+  for "do not touch my files". Knowing only a binary name, the code cannot tell
+  where to read the reply from or how to make the tool safe. `RefineEngine` is a
+  typed table instead, and the `{answer}`/`{prompt}` tokens declare the shape so
+  Custom needs no toggles beside it.
+- **Making Ollama stop emitting terminal control codes** — no way found.
+  `NO_COLOR=1` and `TERM=dumb` change nothing, and it behaves the same whether
+  stdout is a pipe or a regular file (a first test suggested a file was clean; the
+  output had simply been too short to wrap). Its line-wrapping writes part of a
+  word, rewinds with `ESC[<n>D`, erases, breaks the line and rewrites the word, so
+  the rewind has to be honoured rather than deleted — deleting it left the
+  half-word behind and the word appeared twice in the notes.
 - **`NSHostingController.sizingOptions = []` to stop the library window clipping
   its own controls** — measured, and it changes nothing. The symptom looked
   exactly like the documented "content will be centered within that frame"

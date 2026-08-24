@@ -617,7 +617,12 @@ private struct MeetingDetailView: View {
 
         Task {
             do {
-                let written = try await Refine.notes(from: transcript, title: title)
+                let written = try await Refine.notes(
+                    from: transcript,
+                    title: title,
+                    engine: Settings.shared.refineEngine,
+                    model: Settings.shared.refineModel
+                )
                 isRefining = false
                 if store.writeNotes(for: source, body: written) != nil {
                     // Read the body back from the store rather than reusing the

@@ -12,7 +12,7 @@ one microphone.
 Recording and transcription are **always** local. Network traffic happens in
 three places and nowhere else: macOS fetching its own speech models once, an
 optional `localhost:11434` Ollama call that is off by default, and the
-**Refine into Notes** button, which hands one transcript to the Codex CLI
+**Refine into Notes** button, which hands one transcript to the engine you chose
 (section 15). Nothing leaves the machine unless somebody presses that button.
 
 This document explains **how the thing is built and why it is built that way**.
@@ -925,11 +925,42 @@ the first heading. The self-test asserts that a hand edit round-trips
 
 ---
 
-## 15. Refine into Notes — the one thing that leaves the Mac
+## 15. Refine into Notes — the one thing that *can* leave the Mac
 
 A transcript is a wall of prose. What people want from a meeting is the summary,
 the decisions and the action items. That is a language-model job, and it is the
-only feature in this app that touches a network.
+only feature in this app that touches a network — and, since the engine became a
+setting, the only one that need not.
+
+### Choosing the engine
+
+The obvious design is a text field holding a command name. It cannot work,
+because these tools do not share an invocation shape. Checked against what is
+actually installed rather than from memory:
+
+| tool | prompt via | answer from | read-only flag | measured |
+|---|---|---|---|---|
+| `codex` (default) | stdin (`-`) | a **file** (`--output-last-message`) | `--sandbox read-only` | 7 s |
+| `claude` | stdin (`-p`) | **stdout** | `--allowed-tools ''` | 9 s |
+| `cursor-agent` | stdin (`-p`) | **stdout** | `--mode ask --trust --sandbox enabled` | 55 s |
+| `ollama` | stdin | **stdout** | none needed — it has no tools | 3 s |
+
+Three different answers to every question, so `RefineEngine` carries the argument
+vector and the tokens inside it *declare the shape*: an `{answer}` in the
+arguments means the reply is a file, a `{prompt}` means the transcript goes in as
+an argument. That is what keeps a row of toggles out of the Settings pane, and it
+is all a **Custom** engine needs the user to supply.
+
+`cursor-agent --help` is blunt about why the flags are not optional: its print
+mode "Has access to all tools, including write and shell." Each preset's flag was
+tested by prompting the tool to write a file — Claude and Cursor Agent both
+refused and wrote nothing. A **Custom** engine is always described as unsandboxed,
+because what somebody else's tool does with a `--yes` flag cannot be known.
+
+**Ollama is the point of the setting, not a bonus.** Refine was the one feature
+that contradicted the app's premise. The local runner sends nothing anywhere, and
+is also the fastest of the four; the cost is that a small model follows the
+section headings loosely.
 
 ```mermaid
 flowchart TD
@@ -943,7 +974,8 @@ flowchart TD
     WAIT -->|"non-zero status"| ERR2([report the stderr tail])
     WAIT -->|"zero"| READ[read the answer file]
     READ --> FENCE[strip a whole-answer<br/>markdown fence]
-    FENCE --> SIB[["writeNotes writes<br/>&lt;meeting&gt;-notes.md<br/><i>notes-for: &lt;stem&gt;</i>"]]
+    FENCE --> CLEAN[resolve terminal control codes:<br/><i>honour ESC[nD, drop the wrap</i>]
+    CLEAN --> SIB[["writeNotes writes<br/>&lt;meeting&gt;-notes.md<br/><i>notes-for: &lt;stem&gt;</i>"]]
     SIB --> SEL([switch to the meeting's<br/>Notes tab])
 
     style BTN fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -1134,7 +1166,8 @@ automatically and falls back to ad-hoc if it is absent.
 | `MeetingStore.swift` | markdown + frontmatter, lenient parsing, folder scan, rename/move/delete/search, notes pairing |
 | `MeetingHUD.swift` | `KeyableMeetingPanel` — the floating window shown while recording |
 | `NotesFMWindow.swift` / `NotesFMLibrary.swift` | `NSWindow` host and the SwiftUI three-pane library |
-| `Refine.swift` | the Codex CLI bridge — locate, prompt, run sandboxed, unwrap the answer |
+| `Refine.swift` | the CLI bridge — locate, prompt, run sandboxed, clean and unwrap the answer |
+| `RefineEngine.swift` | the engine table: which command, which flags, where the answer comes from |
 | `SelfTest.swift` | `--notesfm-selftest`, 83 checks, no microphone and no network required |
 | `CaptureTest.swift` | **Test Audio Capture…**, the only way to check the system-audio grant |
 
@@ -1154,7 +1187,8 @@ Taken from a real session on macOS 26.5.2, Apple Silicon, 32 GB.
 | Transcription, 5.06 s audio | **185 ms** (≈27× realtime) | — |
 | Release → text on screen | **290 ms** | < 1 s ✅ |
 | Mic open latency | **52–70 ms** | — |
-| `--notesfm-selftest` | **83 / 83** | durability, round trip, note stamping, pause clock, transcript format, refine plumbing, notes pairing ✅ |
+| `--notesfm-selftest` | **117 / 117** | durability, round trip, note stamping, pause clock, transcript format, refine plumbing, notes pairing, engine table, control-code handling ✅ |
+| Refine, same transcript, four engines | **Codex 7 s · Claude 9 s · Cursor Agent 55 s · Ollama 3 s** | through the app binary, zero escape bytes in any answer |
 | Refine round trip | **8.7 s** | ~1 kB transcript, through the app binary |
 | Build warnings | **0** | Swift 6 strict concurrency on ✅ |
 
