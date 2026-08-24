@@ -49,6 +49,19 @@ final class NotesFMWindowController {
         // starts from what is actually there.
         MeetingStore.shared.reload()
 
+        // Land on a meeting, not on an empty pane.
+        //
+        // With nothing selected the detail column is a "No Meeting Selected"
+        // placeholder, and everything that belongs to a meeting — the transcript
+        // and the Refine button under it — is simply absent. Somebody opening
+        // Meetings to read the call they just finished reads it as the window
+        // having lost its contents, and there is nothing on screen to suggest
+        // clicking the list would bring them back.
+        if selection.noteID == nil
+            || !MeetingStore.shared.notes.contains(where: { $0.id == selection.noteID }) {
+            selection.noteID = MeetingStore.shared.notes.first?.id
+        }
+
         if window == nil {
             let view = NotesFMLibraryView(store: MeetingStore.shared, selection: selection)
             let hosting = NSHostingController(rootView: view)
@@ -61,14 +74,20 @@ final class NotesFMWindowController {
             window.center()
             // Remembering the frame is free here and saves the user re-sizing a
             // three-pane window every single time they open it.
-            window.setFrameAutosaveName("NotesFMLibrary")
-            // Setting the autosave name restores whatever frame was last saved,
-            // including one saved before this window had a third pane to fit. A
-            // three-pane window restored too small clips the detail pane, and the
-            // Refine button lives at the bottom of it — the user sees a library
-            // with its main action missing and no hint that it was ever there.
+            // Deliberately not "NotesFMLibrary". That key held a frame saved by
+            // an earlier build — 1920×998, filling an external display — and
+            // setting the autosave name restores it over the size set above, so
+            // the window opened at somebody else's idea of a good size and no
+            // amount of fixing the default changed that. Renaming the key is how
+            // a saved frame gets retired.
+            window.setFrameAutosaveName("NotesFMLibraryWindow")
+            // A restored frame can be wrong in two directions: too small for
+            // three panes, so the detail column and the Refine button in it get
+            // clipped, or saved on a display that is no longer attached.
             let restored = window.contentRect(forFrameRect: window.frame)
-            if restored.width < window.contentMinSize.width
+            let fits = NSScreen.screens.contains { $0.visibleFrame.intersects(window.frame) }
+            if !fits
+                || restored.width < window.contentMinSize.width
                 || restored.height < window.contentMinSize.height {
                 window.setContentSize(NSSize(width: 1040, height: 720))
                 window.center()

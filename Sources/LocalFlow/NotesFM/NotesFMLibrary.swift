@@ -295,6 +295,19 @@ private struct MeetingDetailView: View {
         }
         .navigationTitle(note.title)
         .toolbar {
+            // The same action as the footer button, in the titlebar. Two places
+            // rather than one because the footer is the bottom of a pane that
+            // shares its width with two others, and this one cannot be squeezed,
+            // scrolled past, or clipped by a window restored too small.
+            ToolbarItem {
+                Button {
+                    refine()
+                } label: {
+                    Label("Refine into Meeting Notes", systemImage: "wand.and.stars")
+                }
+                .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Rewrite this transcript as meeting notes using the Codex CLI")
+            }
             ToolbarItem {
                 Button {
                     store.revealInFinder(note)

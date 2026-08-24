@@ -122,6 +122,16 @@ is the right way to be wrong.
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
 - **A window that cannot become key silently eats every keystroke.** No error, no warning — the text field just never receives anything. This is what made "Add a note…" impossible to type into for the whole first version of the HUD.
 - **Fn produces no keyDown, so `.holdBegan` fires before the letter of any chord.** Fn+R therefore started a dictation, which then tripped the meeting's own "finish dictating first" guard, so Fn+R never once started a meeting — and the release typed whatever it had heard into the focused app. `HotkeyManager.fireChord` marks the hold as spoken for and suppresses the release; `abandonHold()` discards the recording silently.
+- **The library opening with nothing selected looks like a broken window.** The
+  detail column is a placeholder, so the transcript *and* the Refine button under
+  it are simply absent, with nothing on screen to suggest that clicking the list
+  brings them back. It reads as the app having lost its contents. `present()` now
+  lands on the newest meeting.
+- **A SwiftUI window's layout can be read with the accessibility tree.** `osascript`
+  walking `UI elements` of the live window is how "the button is missing" was told
+  apart from "the pane the button lives in was never rendered" — it needs no
+  clicking and nothing appears on screen. `cacheDisplay` into a bitmap does *not*
+  work: SwiftUI is layer-backed and the capture comes out blank.
 - **`.fullSizeContentView` puts the content under the traffic lights.** The
   meeting HUD's timer was sitting behind its own close button. It also had no
   `.resizable`, so an hour of transcript was stuck in 300 px that could not be

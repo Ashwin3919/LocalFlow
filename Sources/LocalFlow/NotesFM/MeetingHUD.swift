@@ -66,7 +66,7 @@ final class MeetingHUDController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentMinSize = NSSize(width: 340, height: 320)
         panel.setContentSize(NSSize(width: 380, height: 440))
-        panel.setFrameAutosaveName("NotesFMHUD")
+        panel.setFrameAutosaveName("NotesFMHUDPanel")
         // Setting the autosave name restores a saved frame, which may have been
         // saved by a build whose window was smaller than this one can legally be.
         // A restored frame below the minimum clips its own controls.
