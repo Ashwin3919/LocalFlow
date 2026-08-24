@@ -265,10 +265,14 @@ directory*, which is the claim the `make-cert.sh` decision rests on and had not
 been demonstrated before. Piping the script into `sh` now fails with the
 corrected command instead of a syntax error.
 
-**Blocked on one thing only:** `install.sh` and `README.md` still say `<you>`
-where the GitHub owner goes, and there is no git remote — nothing has ever been
-pushed. The one-liner cannot work until both are filled in and the repo is
-public.
+**No longer blocked.** The repository is published at
+`github.com/Ashwin3919/LocalFlow`, and `install.sh` and `README.md` carry the real
+owner, so the one-liner resolves. The three remaining `<you>` mentions in
+`install.sh` are the guard that detects an *unfilled* placeholder and its error
+message — they are supposed to be there.
+
+**`origin/main` is the trunk now.** Local `main` is a stale six-commit branch from
+before anything was pushed; treat `origin/main` as the truth and branch from it.
 
 **Not verified — do not claim these work:**
 - Real *dual* capture over a long call. One 5-minute call worked; the multi-hour
