@@ -83,6 +83,19 @@ Sources/LocalFlow/NotesFM/
 
 **Meeting files are markdown text, and the file is the source of truth.** `MeetingNote` is metadata plus a body *string*, not a parsed segment tree. A parsed model would let a hand edit put the file into a state the parser rejects, losing the user's words on the next save.
 
+**Both streams heard it? The system-audio copy wins.** On speakers the mic
+re-hears the far end, so both transcribers finalise the same sentence and the
+file printed everything twice — measured on a real call: 29 of 48 mic lines were
+echoes. `EchoFilter` decides from what each stream can physically hear: system
+audio carries *only* the far end, so a sentence appearing there came from the far
+end, and it is a digital copy rather than a recording of a loudspeaker. A mic
+final therefore waits 1.5 s to see whether system audio heard it too. Matching is
+shared words over the **union**, not over the shorter side — union scoring makes a
+length mismatch count against a match, which is what stops a short far-end line
+from being called an echo of a long mic line that also holds the user's own words.
+Deliberately conservative: at 0.6 a heavily garbled duplicate survives, and that
+is the right way to be wrong.
+
 **Speaker labels come from the stream, not a model.** Mic is You, system audio is Them. This is why two separate captures are worth the extra work — speaker identification is normally the hardest part of meeting transcription and here it is free.
 
 **System audio uses Core Audio process taps, not ScreenCaptureKit.** Different TCC service (`kTCCServiceAudioCapture`), and its prompt says "record your system audio" rather than "capture the contents of the system display". ScreenCaptureKit also re-prompts monthly.
@@ -109,6 +122,19 @@ Sources/LocalFlow/NotesFM/
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
 - **A window that cannot become key silently eats every keystroke.** No error, no warning — the text field just never receives anything. This is what made "Add a note…" impossible to type into for the whole first version of the HUD.
 - **Fn produces no keyDown, so `.holdBegan` fires before the letter of any chord.** Fn+R therefore started a dictation, which then tripped the meeting's own "finish dictating first" guard, so Fn+R never once started a meeting — and the release typed whatever it had heard into the focused app. `HotkeyManager.fireChord` marks the hold as spoken for and suppresses the release; `abandonHold()` discards the recording silently.
+- **`.fullSizeContentView` puts the content under the traffic lights.** The
+  meeting HUD's timer was sitting behind its own close button. It also had no
+  `.resizable`, so an hour of transcript was stuck in 300 px that could not be
+  dragged bigger.
+- **`setFrameAutosaveName` restores a frame saved by an older build.** Setting it
+  overrides the `setContentSize` above it, so a three-pane window can come back
+  smaller than its own minimum and clip the pane holding its main action. Both
+  NotesFM windows now re-apply the default size when the restored frame is under
+  the minimum.
+- **A meeting must be closed on `applicationWillTerminate`.** Quitting mid-meeting
+  — which is what `./build.sh install` does — left a transcript stamped
+  `duration: 0` and missing everything since the last flush. `saveBeforeQuit()` is
+  the synchronous subset of `stop()`; the terminate handler cannot await.
 - Swift 6 strict concurrency is on. Resolve warnings; do not suppress them.
 
 ## Measured
@@ -126,7 +152,15 @@ Sources/LocalFlow/NotesFM/
 
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
-**Verified:** dictation end to end; `--notesfm-selftest` 59/59 — durability, markdown round trip, note stamping and the whole pause clock; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+**Verified:** dictation end to end; `--notesfm-selftest` 68/68 — durability, markdown round trip, note stamping, the whole pause clock and the echo filter's thresholds against real pairs from a real call; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+
+**Verified: system audio capture, on this machine, for real.** A 5-minute call was
+recorded with both streams — the log line is `system audio confirmed`. That
+recording is also what proved the echo problem, and `Refine` was then run over the
+whole 8 KB of it through the installed binary: **24.8 s**, and the notes named the
+people the transcript named, marked the garbled parts `[unclear]`, and invented no
+owners. The `--notesfm-refine` seam runs exactly the `Refine.notes` the green
+button calls.
 
 **Verified: the installer path.** Rehearsed end to end from a clean clone —
 `install.sh` → checks → existing cert detected → release build → bundle → sign →
@@ -142,7 +176,8 @@ pushed. The one-liner cannot work until both are filled in and the repo is
 public.
 
 **Not verified — do not claim these work:**
-- Any real system-audio capture. The permission has never been granted on this machine.
+- Real *dual* capture over a long call. One 5-minute call worked; the multi-hour
+  question is still answered by docs only.
 - A real meeting, of any length. The multi-hour question is answered by docs only.
 - Text insertion outside TextEdit — Safari, Cursor, Slack, Terminal, Mail are all untested.
 - German spoken through it. The locale retry path has never fired.

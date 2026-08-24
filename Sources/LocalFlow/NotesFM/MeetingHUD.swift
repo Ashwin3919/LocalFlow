@@ -47,21 +47,33 @@ final class MeetingHUDController {
 
     private func build() {
         let hosting = NSHostingController(rootView: MeetingHUDView(session: session))
+        // Resizable, and without `.fullSizeContentView`. Both were mistakes worth
+        // naming: a fixed-height panel showing an hour of transcript cannot be
+        // made bigger no matter how much the user wants to read, and full-size
+        // content puts the timer underneath the close button.
         let panel = KeyableMeetingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
-            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 440),
+            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         panel.contentViewController = hosting
         panel.title = "NotesFM"
-        panel.titlebarAppearsTransparent = true
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.contentMinSize = NSSize(width: 340, height: 320)
+        panel.setContentSize(NSSize(width: 380, height: 440))
         panel.setFrameAutosaveName("NotesFMHUD")
+        // Setting the autosave name restores a saved frame, which may have been
+        // saved by a build whose window was smaller than this one can legally be.
+        // A restored frame below the minimum clips its own controls.
+        if panel.contentRect(forFrameRect: panel.frame).height < panel.contentMinSize.height
+            || panel.contentRect(forFrameRect: panel.frame).width < panel.contentMinSize.width {
+            panel.setContentSize(NSSize(width: 380, height: 440))
+        }
         window = panel
     }
 
@@ -128,7 +140,9 @@ private struct MeetingHUDView: View {
             .controlSize(.large)
         }
         .padding(14)
-        .frame(minWidth: 320, minHeight: 260)
+        // Only a minimum: the panel is resizable now, so the content has to be
+        // willing to grow into whatever height the user drags it to.
+        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 280, maxHeight: .infinity)
     }
 
     /// The clock stops while paused, so the label has to say why — a frozen timer

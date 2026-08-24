@@ -232,6 +232,40 @@ enum NotesFMSelfTest {
                   twice != nil && store.notes.first { $0.id == twice }?.title == refined.title)
         }
 
+        // 11. The echo filter. Fixtures are real pairs lifted out of a recording
+        //     made on speakers, where the microphone re-heard the far end and both
+        //     transcribers wrote the same sentence. That recording is the reason
+        //     this exists, so it is what the thresholds are checked against.
+        check("an identical pair is an echo",
+              EchoFilter.isEcho(
+                  "Um, I don't know the reason for it, what it's causing this at the moment.",
+                  "Um, I don't know the reason for it, what it's causing this at the moment."))
+        check("a pair the recogniser heard slightly differently is still an echo",
+              EchoFilter.isEcho(
+                  "Um, just waiting for for review from Gammon or like from someone from security at the moment.",
+                  "Um, just waiting for for review from Gammon or like from some of the security at the moment."))
+        check("punctuation and case do not matter",
+              EchoFilter.isEcho("Maybe we can also look into them deeper in the session today.",
+                                "maybe we can also look into them deeper in the session today"))
+        check("two people genuinely saying different things is not an echo",
+              !EchoFilter.isEcho(
+                  "So from my side, I was working on Plexus and what was blocking me.",
+                  "Just for people to know, the Azure VMs are the equivalent of EC2."))
+        check("agreement is not an echo — both people really do say yes",
+              !EchoFilter.isEcho("Yeah", "Yeah")
+                  && !EchoFilter.isEcho("Yep.", "Yep"))
+        // The important safety property. A microphone line that contains the far
+        // end's sentence *and* the user's own words must survive, because dropping
+        // it would throw the user's words away to remove a duplicate.
+        check("a short far-end line inside a longer mic line is not an echo of it",
+              !EchoFilter.isEcho(
+                  "Thanks for that. Right, so from my side I finished the migration branch.",
+                  "Thanks for that."))
+        check("bare punctuation carries no words",
+              EchoFilter.isWordless(".") && EchoFilter.isWordless("..") && EchoFilter.isWordless(", ,."))
+        check("real words are not wordless", !EchoFilter.isWordless("Okay, then."))
+        check("digits count as words", !EchoFilter.isWordless("2026"))
+
         // 10. Search.
         check("search finds by body text", !store.search("rollback").isEmpty)
         check("search is case-insensitive", !store.search("ROLLBACK").isEmpty)

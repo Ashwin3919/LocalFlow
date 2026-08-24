@@ -123,6 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkeys.stop()
+        // A meeting in progress owns an open file whose duration is still zero.
+        // Quitting without this leaves the user a transcript that looks broken.
+        meeting.saveBeforeQuit()
         Log.write("LocalFlow terminated")
     }
 

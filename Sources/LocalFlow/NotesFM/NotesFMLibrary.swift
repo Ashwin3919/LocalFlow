@@ -25,7 +25,10 @@ struct NotesFMLibraryView: View {
         } detail: {
             detail
         }
-        .frame(minWidth: 720, minHeight: 420)
+        // Wide enough that all three panes get a usable share. The detail pane is
+        // where the transcript and the Refine button live, and it is the one that
+        // gets squeezed when this is set too low.
+        .frame(minWidth: 820, minHeight: 520)
     }
 
     // MARK: Sidebar
@@ -396,44 +399,45 @@ private struct MeetingDetailView: View {
     /// says where the text goes right next to itself rather than in a settings
     /// pane nobody opens.
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Button {
-                    refine()
-                } label: {
-                    HStack(spacing: 6) {
-                        if isRefining {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "wand.and.stars")
-                        }
-                        Text(isRefining ? "Refining…" : "Refine into Notes")
+        // The caption sits *under* the button rather than beside it. Beside it,
+        // a narrow detail pane spends the width on wrapping the sentence and
+        // squeezes the button — the one control this pane exists for — down to an
+        // ellipsis.
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                refine()
+            } label: {
+                HStack(spacing: 6) {
+                    if isRefining {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "wand.and.stars")
                     }
-                    .frame(minWidth: 150)
+                    Text(isRefining ? "Refining…" : "Refine into Meeting Notes")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
-                .controlSize(.large)
-                .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Rewrite this transcript as meeting notes using the Codex CLI")
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .controlSize(.large)
+            .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Rewrite this transcript as meeting notes using the Codex CLI")
 
-                if let refineError {
-                    Label(refineError, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(isRefining
-                         ? "Codex is working. This usually takes under a minute."
-                         : "Sends this transcript to Codex and saves the notes as a new file. Nothing else in this app leaves your Mac.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
+            if let refineError {
+                Label(refineError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(isRefining
+                     ? "Codex is working. A long meeting can take a couple of minutes."
+                     : "Sends this transcript to Codex and saves the notes as a new file beside it. Nothing else in this app leaves your Mac.")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(Color(nsColor: .controlBackgroundColor))

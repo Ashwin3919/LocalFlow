@@ -56,12 +56,23 @@ final class NotesFMWindowController {
             window.title = "Meetings"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 1000, height: 680))
-            window.contentMinSize = NSSize(width: 720, height: 420)
+            window.contentMinSize = NSSize(width: 860, height: 560)
+            window.setContentSize(NSSize(width: 1040, height: 720))
             window.center()
             // Remembering the frame is free here and saves the user re-sizing a
             // three-pane window every single time they open it.
             window.setFrameAutosaveName("NotesFMLibrary")
+            // Setting the autosave name restores whatever frame was last saved,
+            // including one saved before this window had a third pane to fit. A
+            // three-pane window restored too small clips the detail pane, and the
+            // Refine button lives at the bottom of it — the user sees a library
+            // with its main action missing and no hint that it was ever there.
+            let restored = window.contentRect(forFrameRect: window.frame)
+            if restored.width < window.contentMinSize.width
+                || restored.height < window.contentMinSize.height {
+                window.setContentSize(NSSize(width: 1040, height: 720))
+                window.center()
+            }
             self.window = window
         }
         NSApp.activate(ignoringOtherApps: true)

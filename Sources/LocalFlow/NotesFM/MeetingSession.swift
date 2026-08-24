@@ -67,6 +67,7 @@ final class MeetingSession: ObservableObject {
         lines = []
         pending = [:]
         elapsed = 0
+        recentFarEnd = []
 
         let started = Date()
         clock.start(at: started)
@@ -161,15 +162,114 @@ final class MeetingSession: ObservableObject {
 
     private func receive(_ segment: TranscribedSegment) {
         guard state != .idle else { return }
-        if segment.isFinal {
-            pending[segment.speaker] = nil
-            writer?.append(speaker: segment.speaker, at: segment.start, text: segment.text)
-            lines.append(segment)
-            if lines.count > Self.displayedLineLimit {
-                lines.removeFirst(lines.count - Self.displayedLineLimit)
-            }
-        } else {
+        guard segment.isFinal else {
             pending[segment.speaker] = segment.text
+            return
+        }
+        pending[segment.speaker] = nil
+
+        // A lone "." is what the quiet side of a conversation produces, and it is
+        // not something anybody said.
+        guard !EchoFilter.isWordless(segment.text) else { return }
+
+        switch segment.speaker {
+        case .them:
+            // System audio only ever carries the far end, so this sentence came
+            // from them — and any microphone copy of it still waiting is the room
+            // hearing the loudspeaker. Drop that copy and keep this one.
+            dropHeldEchoes(of: segment)
+            remember(segment)
+            commit(segment)
+        case .you where system != nil:
+            // The two streams do not finalise in a fixed order, so the far end's
+            // copy may already have been written. Both directions have to be
+            // checked or half the duplicates survive.
+            if echoesRecentFarEnd(segment) {
+                Log.write("NotesFM: dropped a microphone echo of the far end")
+            } else {
+                hold(segment)
+            }
+        case .you, .note:
+            commit(segment)
+        }
+    }
+
+    private func commit(_ segment: TranscribedSegment) {
+        writer?.append(speaker: segment.speaker, at: segment.start, text: segment.text)
+        lines.append(segment)
+        if lines.count > Self.displayedLineLimit {
+            lines.removeFirst(lines.count - Self.displayedLineLimit)
+        }
+    }
+
+    // MARK: - Echo
+
+    /// Microphone finals that are waiting out `EchoFilter.grace` to see whether
+    /// system audio heard the same sentence. See `EchoFilter` for why the
+    /// system-audio copy is the one worth keeping.
+    private var held: [HeldFinal] = []
+
+    /// Identified by a token, not by position: the array shifts underneath a
+    /// release task that is already asleep.
+    private struct HeldFinal {
+        let id: UUID
+        let segment: TranscribedSegment
+        let release: Task<Void, Never>
+    }
+
+    private func hold(_ segment: TranscribedSegment) {
+        let id = UUID()
+        let release = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(EchoFilter.grace))
+            guard !Task.isCancelled else { return }
+            self?.releaseHeld(id)
+        }
+        held.append(HeldFinal(id: id, segment: segment, release: release))
+    }
+
+    private func releaseHeld(_ id: UUID) {
+        guard let position = held.firstIndex(where: { $0.id == id }) else { return }
+        commit(held.remove(at: position).segment)
+    }
+
+    /// Far-end sentences recent enough that the microphone's copy of one could
+    /// still be arriving.
+    private var recentFarEnd: [TranscribedSegment] = []
+
+    private func remember(_ segment: TranscribedSegment) {
+        recentFarEnd.append(segment)
+        // The two analyzers time results by how much audio each has been handed,
+        // so their clocks agree to within a couple of seconds rather than exactly.
+        // The window is wide enough to absorb that drift and short enough that a
+        // phrase genuinely repeated later in the meeting is not mistaken for it.
+        recentFarEnd.removeAll { segment.start - $0.start > EchoFilter.window }
+    }
+
+    private func echoesRecentFarEnd(_ segment: TranscribedSegment) -> Bool {
+        recentFarEnd.contains {
+            abs($0.start - segment.start) <= EchoFilter.window
+                && EchoFilter.isEcho(segment.text, $0.text)
+        }
+    }
+
+    private func dropHeldEchoes(of segment: TranscribedSegment) {
+        held.removeAll { entry in
+            guard EchoFilter.isEcho(entry.segment.text, segment.text) else { return false }
+            entry.release.cancel()
+            Log.write("NotesFM: dropped a microphone echo of the far end")
+            return true
+        }
+    }
+
+    /// Commit everything still waiting, in the order it arrived. Called wherever
+    /// the meeting stops capturing: a sentence must never be lost to a grace
+    /// period that the meeting ended in the middle of.
+    private func flushHeld() {
+        let waiting = held
+        held = []
+        for entry in waiting {
+            entry.release.cancel()
+            commit(entry.segment)
         }
     }
 
@@ -196,6 +296,8 @@ final class MeetingSession: ObservableObject {
 
         ticker?.invalidate()
         ticker = nil
+
+        flushHeld()
 
         // Collapse the volatile window so words that were half-recognised when
         // the pause landed are committed, rather than sitting unfinalised across
@@ -312,6 +414,10 @@ final class MeetingSession: ObservableObject {
         for task in consumers { _ = await task.value }
         consumers = []
 
+        // Every final has now arrived, so anything still inside its echo grace
+        // period will never get a counterpart. Commit it before the file closes.
+        flushHeld()
+
         let url = writer?.url
         writer?.finish(duration: duration)
 
@@ -333,9 +439,37 @@ final class MeetingSession: ObservableObject {
         }
     }
 
+    /// Close the file properly when the app is quitting.
+    ///
+    /// `applicationWillTerminate` cannot await, so this is the synchronous
+    /// subset of `stop()`: capture is stopped, held finals are committed, and the
+    /// duration is stamped. Without it a quit mid-meeting leaves a transcript
+    /// that claims to be zero seconds long and is missing everything since the
+    /// last flush. Volatile text the engines have not finalised is lost, because
+    /// draining them needs an await the app is not going to be granted.
+    func saveBeforeQuit() {
+        guard state == .running || state == .paused else { return }
+        let duration = clock.elapsed(at: Date())
+        clock.freeze(at: Date())
+        state = .stopping
+
+        ticker?.invalidate()
+        ticker = nil
+        mic?.stop()
+        system?.stop()
+        flushHeld()
+
+        let name = writer?.url.lastPathComponent ?? "?"
+        writer?.finish(duration: duration)
+        writer = nil
+        state = .idle
+        Log.write(String(format: "NotesFM: quit mid-meeting, saved %.0f s → %@", duration, name))
+    }
+
     private func fail(_ message: String) {
         Log.write("NotesFM: \(message)")
         warning = message
+        flushHeld()
         mic?.stop()
         system?.stop()
         writer = nil

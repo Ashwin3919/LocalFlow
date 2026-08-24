@@ -249,3 +249,90 @@ enum NotesFM {
         return "\(secs)s"
     }
 }
+
+/// Decides whether two streams heard the same sentence.
+///
+/// On speakers — which is how most people take a call — the microphone re-hears
+/// the far end, so both transcribers finalise the same words and the transcript
+/// prints every sentence twice. That was tolerable while lines carried You/Them
+/// labels and merely ugly. With plain prose it is unreadable, and it also doubles
+/// what Refine has to read.
+///
+/// The rule for which copy survives comes from what each stream can physically
+/// hear. System audio carries **only** the far end, so a sentence appearing there
+/// is proof it came from the far end — and it is a direct digital copy, while the
+/// microphone's version of it is a recording of a loudspeaker. So when both heard
+/// it, the system-audio copy wins. A sentence only the microphone heard is the
+/// user speaking, and is always kept.
+///
+/// A pure value type with no dependencies, so the matching — the part that is
+/// easy to get subtly wrong — is covered by the self-test without a microphone.
+enum EchoFilter {
+    /// How long a microphone sentence waits to see whether system audio heard it
+    /// too.
+    ///
+    /// Both transcribers finalise on the same acoustic pause, so their copies of
+    /// one sentence land within a few hundred milliseconds of each other. This is
+    /// generous by comparison, and it is the only latency the filter costs: the
+    /// user's own words reach the file 1.5 s late, and the far end's not at all.
+    static let grace: TimeInterval = 1.5
+
+    /// How far apart two copies of one sentence may be stamped.
+    ///
+    /// The two analyzers each time results by how much audio they have been
+    /// handed, so the same sentence can carry timestamps a couple of seconds
+    /// apart. Wide enough for that drift, narrow enough that a phrase someone
+    /// genuinely repeats later is not called an echo of the first time.
+    static let window: TimeInterval = 8
+
+    /// Ignored below this many words. Two people really do both say "yeah", and a
+    /// three-word floor keeps agreement from being mistaken for an echo.
+    static let minimumWords = 3
+
+    /// Shared words as a fraction of all words across the pair.
+    ///
+    /// Deliberately measured against the *union*, not the shorter side. Measuring
+    /// against the shorter side would call a short far-end sentence an echo of a
+    /// long microphone line that happens to contain it — and that line also holds
+    /// the user's own words, which would then be thrown away. Union scoring makes
+    /// a length mismatch count against a match, which is what protects them.
+    static let threshold = 0.6
+
+    /// Word tokens, lowercased, punctuation discarded.
+    ///
+    /// The recogniser's two passes over the same audio differ in punctuation and
+    /// capitalisation far more than in words, so comparing anything finer than
+    /// this finds differences that are not there.
+    static func words(_ text: String) -> [String] {
+        text.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+
+    /// True when a final carries no words at all.
+    ///
+    /// A streaming recogniser emits bare punctuation — a lone "." — when a stream
+    /// goes quiet, which happens constantly on the side that is not talking.
+    /// Those are not something anybody said.
+    static func isWordless(_ text: String) -> Bool {
+        words(text).isEmpty
+    }
+
+    static func isEcho(_ a: String, _ b: String) -> Bool {
+        let leftWords = words(a)
+        let right = words(b)
+        guard leftWords.count >= minimumWords, right.count >= minimumWords else { return false }
+
+        // Multiset intersection: a word repeated twice on both sides should count
+        // twice, and a word repeated only on one side should count once.
+        var remaining = leftWords
+        var shared = 0
+        for word in right {
+            guard let index = remaining.firstIndex(of: word) else { continue }
+            remaining.remove(at: index)
+            shared += 1
+        }
+        let union = leftWords.count + right.count - shared
+        return Double(shared) / Double(union) >= threshold
+    }
+}

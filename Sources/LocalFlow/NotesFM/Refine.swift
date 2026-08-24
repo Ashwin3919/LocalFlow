@@ -82,19 +82,24 @@ enum Refine {
 
     // MARK: - The prompt
 
-    /// Written against a transcript that carries **no speaker names and no
-    /// timestamps**, which is the format the file now uses. That removes the
-    /// model's ability to attribute anything, so the instructions lean hard on
-    /// not inventing an owner it cannot know.
+    /// Written for the plain transcript the app produces now, which carries no
+    /// speaker names and no timestamps — so the model has nothing to attribute
+    /// with, and the instructions lean hard on not inventing an owner it cannot
+    /// know. Files recorded before that change, and files from someone who turned
+    /// labels back on, still carry `**[00:04:12] You** —` prefixes, so the prompt
+    /// describes both rather than asserting one.
     static func prompt(title: String, transcript: String) -> String {
         """
         Turn the raw meeting transcript below into meeting notes.
 
-        The transcript was produced live from audio by a speech recogniser. It has \
-        no speaker names and no timestamps. Punctuation is approximate and \
-        individual words may be misheard. Lines beginning with "> " are notes the \
-        person typed themselves during the meeting, so treat those as reliable. A \
-        line like "_— paused for 4m 10s —_" means recording was stopped there and \
+        The transcript was produced live from audio by a speech recogniser. \
+        Punctuation is approximate and individual words may be misheard. It is \
+        usually continuous prose with no speaker names; if lines do carry a \
+        prefix like "**[00:04:12] You** —" then "You" is the person whose Mac \
+        recorded this and "Them" is everyone else, and those prefixes must not \
+        appear in your output. Lines beginning with "> " are notes the person \
+        typed themselves during the meeting, so treat those as reliable. A line \
+        like "_— paused for 4m 10s —_" means recording was stopped there and \
         something is missing.
 
         Write Markdown, using only the sections the transcript actually supports:
