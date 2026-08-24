@@ -210,12 +210,21 @@ is the right way to be wrong.
   `duration: 0` and missing everything since the last flush. `saveBeforeQuit()` is
   the synchronous subset of `stop()`; the terminate handler cannot await.
 - Swift 6 strict concurrency is on. Resolve warnings; do not suppress them.
+- **`nonisolated(unsafe)` on a local `var` does not make a closure Sendable.**
+  The annotation silences isolation checking on the *variable*; capturing a
+  mutable local still leaves the closure non-Sendable, and `Task.detached` wants
+  a sending operation. Whether that is diagnosed is toolchain-dependent — the
+  `--notesfm-refine` seam compiled clean on Swift 6.3.3 here and failed to build
+  for somebody installing from a clean clone. A small `@unchecked Sendable` box
+  captured by reference compiles everywhere, which is why `main.swift` uses
+  `ExitCodeBox` and `Refine.swift` uses `DataBox`. The `Task.detached` +
+  semaphore structure around it is the deadlock fix above and stays as it is.
 
 ## Measured
 
 | | |
 |---|---|
-| App on disk | 1.8 MB bundle (1792 KB binary) — the 740 KB in earlier notes was stale well before pause was added; the pre-pause binary measured 1656 KB |
+| App on disk | 2.2 MB bundle (2252 KB binary, Swift 6.3.3, release) — the 1792 KB above it went stale when the notes-engine commit landed, and 740 KB before that. Another machine measured 2222 KB on its own toolchain, so treat the last 30 KB as compiler, not code |
 | Idle RSS | 49 MB (71 MB after Settings opens once — SwiftUI, non-returning) |
 | Idle CPU | 0.0% sustained |
 | ASR warm-load | 88–107 ms (vs the 8–10 s cold start this replaces) |

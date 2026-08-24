@@ -37,7 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(1)
             }
             let semaphore = DispatchSemaphore(value: 0)
-            nonisolated(unsafe) var code: Int32 = 0
+            // A box, not a `nonisolated(unsafe) var`. The annotation stops the
+            // isolation checker complaining about the variable, but capturing a
+            // mutable local still makes the closure non-Sendable, and
+            // `Task.detached` wants a sending operation — which some toolchains
+            // reject and others let through. A class captured by reference is
+            // Sendable either way; same trick as `DataBox` in Refine.swift.
+            final class ExitCodeBox: @unchecked Sendable { var code: Int32 = 0 }
+            let status = ExitCodeBox()
             // `Task.detached`, not `Task`. This method is `@MainActor`, so a plain
             // `Task` inherits the main actor and could never start while the
             // semaphore below is holding the main thread — a deadlock, not a slow
@@ -55,12 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     FileHandle.standardError.write(
                         Data("refine failed: \(error.localizedDescription)\n".utf8))
-                    code = 1
+                    status.code = 1
                 }
                 semaphore.signal()
             }
             semaphore.wait()
-            exit(code)
+            exit(status.code)
         }
         if let index = CommandLine.arguments.firstIndex(of: "--notesfm-capture-test") {
             let seconds = CommandLine.arguments.count > index + 1
