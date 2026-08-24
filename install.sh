@@ -1,7 +1,7 @@
 #!/bin/zsh
 # One-command installer for LocalFlow.
 #
-#   curl -fsSL https://raw.githubusercontent.com/<you>/LocalFlow/main/install.sh | zsh
+#   curl -fsSL https://raw.githubusercontent.com/Ashwin3919/LocalFlow/main/install.sh | zsh
 #
 # or, from inside a clone:  ./install.sh
 #
@@ -9,7 +9,7 @@
 # than a wall of compiler output.
 set -euo pipefail
 
-REPO="${LOCALFLOW_REPO:-https://github.com/<you>/LocalFlow.git}"
+REPO="${LOCALFLOW_REPO:-https://github.com/Ashwin3919/LocalFlow.git}"
 CLONE_DIR="${LOCALFLOW_DIR:-$HOME/LocalFlow}"
 
 MIN_MACOS=26
