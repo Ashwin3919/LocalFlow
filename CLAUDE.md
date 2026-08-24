@@ -77,7 +77,19 @@ Sources/LocalFlow/NotesFM/
 
 **Transcripts are plain prose by default, not `**[00:04:12] You** —` lines.** The file is read end to end and then handed to a model; a wall of timestamped speaker prefixes serves neither. Dual capture still does the work it was built for — two streams are what allow both sides to be transcribed at all — the labels simply stop being printed. `Settings → Meetings` turns them back on, and `TranscriptStyle` is the switch. Typed notes stay as `>` blockquotes so the user's own words are never put in a speaker's mouth.
 
-**Refine writes a new file; it never edits the transcript.** `MeetingStore.createSibling` puts the notes next to the recording as `… — Notes`. A model's rewrite of what was said must not be able to replace what was actually recorded, and the raw file stays the record.
+**Refine writes a new file; it never edits the transcript.** `MeetingStore.writeNotes` puts the notes next to the recording as `<meeting>-notes.md`. A model's rewrite of what was said must not be able to replace what was actually recorded, and the raw file stays the record.
+
+**The notes are a tab on the meeting, not a second row in the library.** "Its own
+file" was being read as "its own meeting": notes share their source's `started`
+and sort by filename as the tiebreak, so they sorted *above* the transcript, the
+library opened on them, and the recording looked like a duplicate underneath.
+Pressing the button twice left `… — Notes 2`. The link is `notes-for: <stem>` in
+the notes file's frontmatter; the filename is **derived, not uniqued**, so
+refining again replaces. `MeetingStore.notes` stays the flat on-disk truth and
+`meetings` is what the library lists. Files predating the key are paired by
+filename at load, in memory only — an old library reads correctly without being
+rewritten on disk. A notes file whose meeting is gone stays listed: an orphan is
+still a file with somebody's words in it.
 
 **Refine shells out to `codex exec`, and is given no power beyond text.** `--sandbox read-only` in a temp directory, `--ephemeral`, stdout to `/dev/null`, and the answer read from `--output-last-message` so progress chatter can never land in somebody's notes. Codex is an agentic coding tool; here it is a text transform and has no means to be anything else.
 
@@ -120,6 +132,21 @@ is the right way to be wrong.
 - **A GUI app does not inherit the shell's `PATH`.** `Refine.locate()` checks where the Codex CLI actually installs before falling back to asking a login shell. Assuming `codex` is on `PATH` works from a terminal and fails in the shipped app.
 - **`Task { }` inside a `@MainActor` method inherits the main actor.** The `--notesfm-refine` seam deadlocked instantly because a `DispatchSemaphore` held the main thread while the `Task` waited for it. `Task.detached` is required whenever a blocking wait is involved.
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
+- **`.fixedSize(horizontal: false, vertical: true)` sets a pane's *minimum*
+  height, and SwiftUI centres content it cannot fit.** This is what made the
+  library window unusable, and it looked like everything except what it was. One
+  `fixedSize` on the footer caption under the Refine button forced that sentence
+  to its wrapped height; measured at the narrowest width the detail column
+  allows, it wrapped far enough that the pane's minimum was taller than the
+  window. SwiftUI then laid the split view out at that minimum and centred the
+  overflow: content 1376pt in a 773pt window, 275pt clipped off the top, 328pt off
+  the bottom, and the green button 1029pt *below* the sill. The sidebar read as
+  blank and the detail pane as empty because their contents were not inside the
+  window at all. The taller the transcript, the worse it got — which is why it was
+  fine while meetings were short. `lineLimit` wraps without pinning a floor.
+  **Do not reach for `NSHostingController.sizingOptions` here**; it is the obvious
+  suspect, it matches the documented centring wording, and a harness proved it
+  changes nothing (see `NOTES.md`).
 - **A window that cannot become key silently eats every keystroke.** No error, no warning — the text field just never receives anything. This is what made "Add a note…" impossible to type into for the whole first version of the HUD.
 - **Fn produces no keyDown, so `.holdBegan` fires before the letter of any chord.** Fn+R therefore started a dictation, which then tripped the meeting's own "finish dictating first" guard, so Fn+R never once started a meeting — and the release typed whatever it had heard into the focused app. `HotkeyManager.fireChord` marks the hold as spoken for and suppresses the release; `abandonHold()` discards the recording silently.
 - **The library opening with nothing selected looks like a broken window.** The
@@ -131,7 +158,11 @@ is the right way to be wrong.
   walking `UI elements` of the live window is how "the button is missing" was told
   apart from "the pane the button lives in was never rendered" — it needs no
   clicking and nothing appears on screen. `cacheDisplay` into a bitmap does *not*
-  work: SwiftUI is layer-backed and the capture comes out blank.
+  work: SwiftUI is layer-backed and the capture comes out blank. The measurement
+  that matters is each element's `y` against the window's own visible range: a
+  control drawn *outside* its window is invisible rather than absent, and the two
+  need opposite fixes. That comparison is what turned "the Refine button is
+  missing" into "it is at y=7 and the window ends at y=-249".
 - **`.fullSizeContentView` puts the content under the traffic lights.** The
   meeting HUD's timer was sitting behind its own close button. It also had no
   `.resizable`, so an hour of transcript was stuck in 300 px that could not be
@@ -162,7 +193,7 @@ is the right way to be wrong.
 
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
-**Verified:** dictation end to end; `--notesfm-selftest` 68/68 — durability, markdown round trip, note stamping, the whole pause clock and the echo filter's thresholds against real pairs from a real call; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+**Verified:** dictation end to end; `--notesfm-selftest` 83/83 — durability, markdown round trip, note stamping, the whole pause clock and the echo filter's thresholds against real pairs from a real call; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
 
 **Verified: system audio capture, on this machine, for real.** A 5-minute call was
 recorded with both streams — the log line is `system audio confirmed`. That
@@ -171,6 +202,17 @@ whole 8 KB of it through the installed binary: **24.8 s**, and the notes named t
 people the transcript named, marked the garbled parts `[unclear]`, and invented no
 owners. The `--notesfm-refine` seam runs exactly the `Refine.notes` the green
 button calls.
+
+**Verified: the library window renders inside itself again.** It had been drawing
+its own controls outside the window — measured before the fix: 1376pt of content
+in a 773pt window, the title field 261pt above the top edge and the green Refine
+button 1029pt below the bottom. After removing the `fixedSize` (see the gotcha
+above): content 721pt against a 721pt host, **0 of 14 controls outside the
+window**, titlebar reads "Meetings" rather than "All Meetings", and a real
+`CGEvent` click on a list row switches the detail pane. Screenshots confirm the
+sidebar, the list, the transcript and the green button all draw. The notes pairing
+took the user's own library from 7 rows to 5, with the refined meetings showing a
+wand and a `Notes | Transcript` switch that opens on the notes.
 
 **Verified: the installer path.** Rehearsed end to end from a clean clone —
 `install.sh` → checks → existing cert detected → release build → bundle → sign →
@@ -191,14 +233,30 @@ public.
 - A real meeting, of any length. The multi-hour question is answered by docs only.
 - Text insertion outside TextEdit — Safari, Cursor, Slack, Terminal, Mail are all untested.
 - German spoken through it. The locale retry path has never fired.
-- The library sidebar and toolbar rendering, and Ollama cleanup.
-- **Typing into the HUD note field.** The panel fix follows from the SDK, but no keystroke has been observed landing in it.
-- **The Refine button itself.** The code path behind it is proven — `--notesfm-refine` runs the same `Refine.notes` through the app binary and returned real notes in 8.7 s — but nobody has clicked the button, so the SwiftUI state, the green tint and the jump to the new note are unobserved.
+- Ollama cleanup. (The library sidebar and toolbar do render — observed.)
+- **Pressing Refine and getting notes back, since the pairing change.** The button
+  itself is now observed: it draws, it enables and disables, it reads "Refine
+  Again" when notes exist, and the `Notes | Transcript` switch it lands on works.
+  The write path is covered by the self-test. The full button → Codex → notes
+  round trip has not been re-run against the new `writeNotes`.
 - **A very long transcript through Refine.** Tested at ~1 kB. A two-hour meeting is a different proposition and the 240 s timeout is a guess.
 - **Pause and resume against live audio.** The clock arithmetic is tested; stopping and rebuilding a real mic graph and a real process tap mid-meeting is not.
 - **A long pause with the analyzer left idle.** Nothing documents what `SpeechAnalyzer` does when its input goes quiet for an hour.
 - Fn+P, and Fn+R now that it no longer trips the dictation guard.
 - The microphone surviving a device change mid-meeting, and meetings honouring the chosen mic.
+
+**Known broken — measured, not suspected:**
+- **Typing into the meeting HUD's note field does not work.** Previously listed
+  here as merely unverified; it is a defect. A real `CGEvent` click (an
+  accessibility press never reaches `sendEvent`) gives the field first responder —
+  `AXFocused` true — and a real keystroke still lands in the frontmost
+  application. Keyboard input goes to the key window of the *active* app and an
+  accessory app is never active on its own; `NSApplication.h` says plainly that
+  `activate()` "does not guarantee that the app will be activated at all".
+  Removing `.nonactivatingPanel` made it worse, not better: the click then did not
+  focus the field at all. Three approaches failed and were reverted rather than
+  shipped — see the dead ends in `NOTES.md`. A fix needs a route that activates
+  the app from a click macOS honours, most likely the status menu.
 
 **Known open risks:** Core Audio taps reportedly return silence for Microsoft Teams; on speakers the mic re-hears the far end, so the same words may appear under both labels.
 

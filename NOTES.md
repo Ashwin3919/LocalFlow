@@ -152,6 +152,23 @@ Accessibility and Input Monitoring are **never** plist entries. They are granted
 only by the user in System Settings. Only `NSMicrophoneUsageDescription` (and
 `NSSpeechRecognitionUsageDescription`) belong in `Info.plist`.
 
+### Refined notes are a tab on the meeting, not a second row
+
+Refine writes its output to its own file — a model's rewrite of what was said
+must never be able to replace the recording — but "its own file" was being read
+by the library as "its own meeting". The notes sorted *above* the transcript they
+came from, because they share its start time and sort by filename as a tiebreak,
+so the library opened on the notes and the recording looked like a duplicate
+underneath. Pressing the button twice added `… — Notes 2`.
+
+The link is a `notes-for: <meeting stem>` key in the notes file's frontmatter,
+and the filename is derived (`<meeting>-notes.md`) rather than uniqued, so
+refining again replaces the previous notes instead of accumulating. Files written
+before that key existed are paired by filename on load — in memory only, so an
+old library reads correctly without being rewritten on disk. A notes file whose
+meeting is gone stays listed rather than vanishing; an orphan is still a file with
+somebody's words in it.
+
 ## Dead ends and things deliberately not done
 
 - **300 ms pre-roll ring buffer** — requires an always-live microphone, which
@@ -165,6 +182,27 @@ only by the user in System Settings. Only `NSMicrophoneUsageDescription` (and
   `kAudioOutputUnitProperty_CurrentDevice` on the input node's audio unit before
   the engine starts, resolving the saved UID through CoreAudio in
   `AudioDevices.swift`. Falls back to the system default and logs if that fails.
+- **`NSHostingController.sizingOptions = []` to stop the library window clipping
+  its own controls** — measured, and it changes nothing. The symptom looked
+  exactly like the documented "content will be centered within that frame"
+  behaviour, so this was the obvious suspect. A standalone harness proved it is
+  not: setting `[]` on the controller, on its `NSHostingView`, or on both leaves
+  the overflow identical, and a harness without the offending SwiftUI modifier
+  never overflows in the first place with the defaults left alone. The cause was
+  inside SwiftUI — see the `fixedSize` gotcha in `CLAUDE.md`. Reverted rather than
+  left in, because a line that does nothing under a comment claiming it fixes
+  something is worse than no line.
+- **`.nonactivatingPanel` plus `canBecomeKey` to make the meeting HUD's note field
+  typable** — does not work, and neither does removing the style mask. Measured
+  with a real `CGEvent` click, because an accessibility press never reaches
+  `sendEvent`: the field takes first responder (`AXFocused` true) and a real
+  keystroke still goes to the frontmost application. Keyboard input goes to the
+  key window of the *active* app, and an accessory app is never active on its own;
+  `NSApplication.h` is explicit that `activate()` "does not guarantee that the app
+  will be activated at all". Dropping `.nonactivatingPanel` made it worse — the
+  click then did not focus the field at all. Left as a known defect rather than
+  patched speculatively; it needs a route that activates the app from a click
+  macOS honours, such as the status menu.
 
 ## Rebuilding
 

@@ -208,29 +208,84 @@ enum NotesFMSelfTest {
                   && builtPrompt.contains("Invent nothing")
                   && builtPrompt.contains("Weekly Sync"))
 
-        // 9. Refined notes are written beside the transcript, never over it.
+        // 9. Refined notes are written beside the transcript, never over it, and
+        //    they belong to the meeting rather than becoming another row.
         let transcriptBefore = (try? String(contentsOf: writer.url, encoding: .utf8)) ?? ""
-        guard let siblingID = store.createSibling(
-            of: note, titleSuffix: " — Notes", body: "# Notes\n\n- decided to ship Thursday\n"
+        guard let notesID = store.writeNotes(
+            for: note, body: "# Notes\n\n- decided to ship Thursday\n"
         ) else {
-            print("  FAIL createSibling returned nothing")
+            print("  FAIL writeNotes returned nothing")
             return 1
         }
         let transcriptAfter = (try? String(contentsOf: writer.url, encoding: .utf8)) ?? ""
         check("the original transcript file is byte-identical afterwards",
               transcriptBefore == transcriptAfter)
-        check("the notes landed in a different file", siblingID != note.id)
+        check("the notes landed in a different file", notesID != note.id)
+        check("the notes filename is derived from the meeting's",
+              notesID == note.id + "-notes")
         check("the notes are titled from the meeting",
-              store.notes.contains { $0.id == siblingID && $0.title == "Weekly Sync: Q3 planning — Notes" })
+              store.notes.contains { $0.id == notesID && $0.title == "Weekly Sync: Q3 planning — Notes" })
         check("the notes carry no duration, having recorded no audio",
-              store.notes.first { $0.id == siblingID }?.duration == 0)
+              store.notes.first { $0.id == notesID }?.duration == 0)
         check("the notes body was written",
-              store.notes.first { $0.id == siblingID }?.body.contains("ship Thursday") == true)
-        if let refined = store.notes.first(where: { $0.id == siblingID }) {
-            let twice = store.createSibling(of: refined, titleSuffix: " — Notes", body: "x")
-            check("refining a refined note does not stack the suffix",
-                  twice != nil && store.notes.first { $0.id == twice }?.title == refined.title)
+              store.notes.first { $0.id == notesID }?.body.contains("ship Thursday") == true)
+
+        // 9b. The pairing. This is what stops a refined meeting from showing up
+        //     twice in the library, which is what it used to do.
+        check("the notes record which meeting they belong to",
+              store.notes.first { $0.id == notesID }?.notesFor == note.id)
+        check("the meeting itself claims no parent",
+              store.notes.first { $0.id == note.id }?.notesFor == nil)
+        check("the notes are reachable from the meeting",
+              store.attachedNotes(for: note)?.id == notesID)
+        check("the library lists the meeting but not its notes",
+              store.meetings.contains { $0.id == note.id }
+                  && !store.meetings.contains { $0.id == notesID })
+        check("a search that only matches the notes still finds the meeting",
+              store.searchMeetings("ship Thursday").contains { $0.id == note.id })
+
+        // 9c. Refining again replaces the notes. The old uniquing left
+        //     `… — Notes` and `… — Notes 2` behind as two more rows, neither
+        //     reachable from the meeting they described.
+        let again = store.writeNotes(for: note, body: "# Notes\n\n- shipped\n")
+        check("refining again reuses the same file", again == notesID)
+        check("refining again replaces the body, and adds no second file",
+              store.notes.first { $0.id == notesID }?.body.contains("shipped") == true
+                  && store.notes.count { $0.notesFor == note.id } == 1)
+
+        // 9d. A rename must not break the pair. Without this the notes keep the
+        //     old stem and reappear as an orphan row.
+        let renamedTitle = "Weekly Sync: Q3 planning, renamed"
+        store.rename(note, to: renamedTitle)
+        guard let renamed = store.meetings.first(where: { $0.title == renamedTitle }) else {
+            print("  FAIL the meeting vanished after a rename")
+            return 1
         }
+        check("the notes follow the meeting through a rename",
+              store.attachedNotes(for: renamed)?.id == renamed.id + "-notes")
+        check("the renamed pair is still one row",
+              store.meetings.count { $0.id == renamed.id || $0.notesFor == renamed.id } == 1)
+        check("the notes are retitled with the meeting",
+              store.attachedNotes(for: renamed)?.title == renamedTitle + " — Notes")
+
+        // 9e. Deleting only the notes leaves the recording alone.
+        store.deleteNotes(for: renamed)
+        check("deleting the notes leaves the meeting listed",
+              store.attachedNotes(for: renamed) == nil
+                  && store.meetings.contains { $0.id == renamed.id })
+
+        // 9f. The filename fallback, for the notes files written before
+        //     `notes-for` existed — including the `-2` duplicates.
+        check("a legacy notes filename maps back to its meeting",
+              MeetingMarkdown.meetingStem(ofNotesStem: "2026-08-24-1003-standup-notes")
+                  == "2026-08-24-1003-standup")
+        check("a duplicate left by the old uniquing maps back too",
+              MeetingMarkdown.meetingStem(ofNotesStem: "2026-08-24-1003-standup-notes-2")
+                  == "2026-08-24-1003-standup")
+        check("an ordinary meeting filename is not mistaken for notes",
+              MeetingMarkdown.meetingStem(ofNotesStem: "2026-08-24-1003-standup") == nil)
+        check("a meeting whose own title ends in the word notes is not mistaken for one",
+              MeetingMarkdown.meetingStem(ofNotesStem: "notes") == nil)
 
         // 11. The echo filter. Fixtures are real pairs lifted out of a recording
         //     made on speakers, where the microphone re-heard the far end and both

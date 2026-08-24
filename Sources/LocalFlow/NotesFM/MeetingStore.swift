@@ -29,26 +29,40 @@ enum MeetingMarkdown {
 
     // MARK: Writing
 
-    static func frontmatter(title: String, started: Date, duration: TimeInterval, id: String) -> String {
+    static func frontmatter(
+        title: String,
+        started: Date,
+        duration: TimeInterval,
+        id: String,
+        notesFor: String? = nil
+    ) -> String {
         // No quoting of the title: the parser takes everything after the first
         // colon as the value, so colons and quotes in a title survive untouched
         // and the file stays pleasant to read in any editor.
-        let lines = [
+        var lines = [
             "---",
             "title: \(singleLine(title))",
             "started: \(iso.format(started))",
             "duration: \(Int(max(0, duration).rounded()))",
-            "id: \(id)",
-            "---"
+            "id: \(id)"
         ]
+        // Only present on a notes file, so an ordinary transcript keeps exactly
+        // the four keys it has always had.
+        if let notesFor, !notesFor.isEmpty { lines.append("notes-for: \(singleLine(notesFor))") }
+        lines.append("---")
         return lines.joined(separator: "\n") + "\n\n"
     }
 
     /// The full file contents for a note. The body is written verbatim, which is
     /// what makes save-then-load a true round trip.
     static func document(for note: MeetingNote) -> String {
-        frontmatter(title: note.title, started: note.started, duration: note.duration, id: note.id)
-            + note.body
+        frontmatter(
+            title: note.title,
+            started: note.started,
+            duration: note.duration,
+            id: note.id,
+            notesFor: note.notesFor
+        ) + note.body
     }
 
     // MARK: Reading
@@ -76,6 +90,7 @@ enum MeetingMarkdown {
             started: started,
             duration: duration,
             folder: folder,
+            notesFor: fields["notes-for"].flatMap(nonEmpty),
             body: body
         )
     }
@@ -243,6 +258,34 @@ enum MeetingMarkdown {
         uniqueStem(prefix: datePrefix(for: started), title: title, in: directory)
     }
 
+    /// The one filename a meeting's notes are allowed to have.
+    ///
+    /// Deliberately derived rather than uniqued. `uniqueStem` is right for a new
+    /// recording, and wrong here: pressing Refine twice produced `… — Notes` and
+    /// `… — Notes 2` as two more rows in the library, and neither was reachable
+    /// from the meeting they belonged to. A derived name means refining again
+    /// replaces the notes it wrote last time, and the transcript — the record of
+    /// what was actually said — is still never touched.
+    static func notesStem(forMeeting stem: String) -> String {
+        "\(stem)-notes"
+    }
+
+    /// The meeting a notes filename belongs to, for files written before
+    /// `notes-for` existed. `…-notes` and the `…-notes-2` duplicates that the
+    /// old uniquing produced both map back to the same meeting.
+    static func meetingStem(ofNotesStem stem: String) -> String? {
+        var candidate = stem
+        // Strip a trailing `-<digits>` left by `uniqueStem`.
+        if let dash = candidate.lastIndex(of: "-"),
+           candidate[candidate.index(after: dash)...].allSatisfy(\.isNumber),
+           candidate.index(after: dash) < candidate.endIndex {
+            candidate = String(candidate[..<dash])
+        }
+        guard candidate.hasSuffix("-notes") else { return nil }
+        let base = String(candidate.dropLast("-notes".count))
+        return base.isEmpty ? nil : base
+    }
+
     /// Last-resort title for a file with no frontmatter and no heading.
     private static func deslug(_ stem: String) -> String {
         var name = stem
@@ -268,8 +311,28 @@ enum MeetingMarkdown {
 final class MeetingStore: ObservableObject {
     static let shared = MeetingStore()
 
+    /// Every markdown file in the library, notes files included. The on-disk
+    /// truth, and what `search` and `save` work against.
     @Published private(set) var notes: [MeetingNote] = []
     @Published private(set) var folders: [String] = []
+    /// Meeting id → the notes file that belongs to it. Resolved once per reload
+    /// rather than searched per row, because the library asks for every row.
+    @Published private(set) var attachments: [String: MeetingNote] = [:]
+
+    /// What the library lists: one row per meeting, with attached notes folded
+    /// into the meeting they belong to.
+    ///
+    /// A notes file whose meeting is gone stays in this list rather than
+    /// vanishing — an orphan is still a file with the user's words in it.
+    var meetings: [MeetingNote] {
+        let attached = Set(attachments.values.map(\.id))
+        return notes.filter { !attached.contains($0.id) }
+    }
+
+    /// The notes written for a meeting, if any.
+    func attachedNotes(for meeting: MeetingNote) -> MeetingNote? {
+        attachments[meeting.id]
+    }
 
     private let rootURL: URL
     var root: URL { rootURL }
@@ -295,6 +358,49 @@ final class MeetingStore: ObservableObject {
         // flickers between two meetings that share a timestamp.
         notes = found.sorted { $0.started == $1.started ? $0.id > $1.id : $0.started > $1.started }
         folders = names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        notes = inferringNotesLinks(notes)
+        attachments = resolveAttachments(in: notes)
+    }
+
+    /// Fills in `notes-for` for the notes files written before that key existed.
+    ///
+    /// A stem of `<meeting>-notes` — or the `-2` that a second press of Refine
+    /// used to produce — whose meeting is sitting in the same folder is that
+    /// meeting's notes, whatever its frontmatter says. In memory only: nothing
+    /// here rewrites a file the user has not asked it to touch, so an old library
+    /// reads correctly without being migrated on disk.
+    private func inferringNotesLinks(_ all: [MeetingNote]) -> [MeetingNote] {
+        let byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return all.map { note in
+            guard note.notesFor == nil,
+                  let target = MeetingMarkdown.meetingStem(ofNotesStem: note.id),
+                  target != note.id,
+                  let meeting = byID[target],
+                  meeting.folder == note.folder
+            else { return note }
+            var updated = note
+            updated.notesFor = target
+            return updated
+        }
+    }
+
+    /// Picks the one notes file that stands as each meeting's notes.
+    ///
+    /// `notes` is newest-first, so the first match wins. An older duplicate left
+    /// by the previous naming is not chosen, and therefore stays in the library
+    /// as its own row — visible and deletable rather than silently hidden, which
+    /// is the wrong way to be wrong about a file holding somebody's words.
+    private func resolveAttachments(in all: [MeetingNote]) -> [String: MeetingNote] {
+        let meetingIDs = Set(all.filter { $0.notesFor == nil }.map(\.id))
+        var result: [String: MeetingNote] = [:]
+        for note in all {
+            guard let target = note.notesFor,
+                  meetingIDs.contains(target),
+                  result[target] == nil
+            else { continue }
+            result[target] = note
+        }
+        return result
     }
 
     private func loadNotes(in directory: URL, folder: String?) -> [MeetingNote] {
@@ -343,28 +449,26 @@ final class MeetingStore: ObservableObject {
         }
     }
 
-    /// Writes a new note beside an existing one and returns its id.
+    /// Writes the refined notes for a meeting and returns their id.
     ///
-    /// Used by the refine action. A separate file, never an edit of the original:
-    /// the transcript is the record of what was actually said, and a model's
-    /// rewrite of it — however good — must not be able to replace that. Sharing
-    /// the source note's date prefix keeps the pair adjacent in the folder.
+    /// A separate file, never an edit of the original: the transcript is the
+    /// record of what was actually said, and a model's rewrite of it — however
+    /// good — must not be able to replace that. The name is derived from the
+    /// meeting's own, so refining twice replaces the notes instead of leaving a
+    /// second copy behind, and the pair stays adjacent in the folder.
     @discardableResult
-    func createSibling(of source: MeetingNote, titleSuffix: String, body: String) -> String? {
-        let directory = source.url.deletingLastPathComponent()
-        let base = source.title.isEmpty ? "Untitled" : source.title
-        // Refining an already-refined note should not stack the suffix up.
-        let title = base.hasSuffix(titleSuffix) ? base : base + titleSuffix
-        let stem = MeetingMarkdown.uniqueStem(title: title, started: source.started, in: directory)
-
+    func writeNotes(for meeting: MeetingNote, body: String) -> String? {
+        let directory = meeting.url.deletingLastPathComponent()
+        let stem = MeetingMarkdown.notesStem(forMeeting: meeting.id)
         let note = MeetingNote(
             id: stem,
             url: directory.appendingPathComponent(stem).appendingPathExtension("md"),
-            title: title,
-            started: source.started,
+            title: meeting.title.isEmpty ? "Untitled — Notes" : meeting.title + " — Notes",
+            started: meeting.started,
             // Zero seconds: no audio was recorded into this file.
             duration: 0,
-            folder: source.folder,
+            folder: meeting.folder,
+            notesFor: meeting.id,
             body: body.hasSuffix("\n") ? body : body + "\n"
         )
         guard write(note) else { return nil }
@@ -373,7 +477,22 @@ final class MeetingStore: ObservableObject {
         return note.id
     }
 
+    /// Trashes only the notes written for a meeting, leaving the recording alone.
+    func deleteNotes(for meeting: MeetingNote) {
+        guard let notes = attachedNotes(for: meeting) else { return }
+        trash(notes)
+        reload()
+    }
+
     func delete(_ note: MeetingNote) {
+        // The notes go with the meeting. Leaving them behind would turn them into
+        // an orphan row referring to a recording that no longer exists.
+        if let attached = attachedNotes(for: note) { trash(attached) }
+        trash(note)
+        reload()
+    }
+
+    private func trash(_ note: MeetingNote) {
         do {
             // Trash, never remove. A meeting deleted by a mis-click has to be
             // recoverable, and this app is not the right place to be certain.
@@ -392,6 +511,10 @@ final class MeetingStore: ObservableObject {
         var updated = note
         updated.title = clean
 
+        // Captured before the file moves: the link is by stem, and the stem is
+        // about to change.
+        let attached = attachedNotes(for: note)
+
         let directory = note.url.deletingLastPathComponent()
         let prefix = MeetingMarkdown.datePrefix(ofStem: note.id) ?? MeetingMarkdown.datePrefix(for: note.started)
         let stem = MeetingMarkdown.uniqueStem(prefix: prefix, title: clean, in: directory, ignoring: note.url)
@@ -402,6 +525,7 @@ final class MeetingStore: ObservableObject {
         // The title is written even when the move failed, so a read-only folder
         // costs the user a filename, not their edit.
         _ = write(updated)
+        if let attached { relocateNotes(attached, following: updated) }
         reload()
     }
 
@@ -417,6 +541,7 @@ final class MeetingStore: ObservableObject {
             return
         }
 
+        let attached = attachedNotes(for: note)
         let prefix = MeetingMarkdown.datePrefix(ofStem: note.id) ?? MeetingMarkdown.datePrefix(for: note.started)
         let stem = MeetingMarkdown.uniqueStem(prefix: prefix, title: note.title, in: destination)
         guard let moved = moveFile(at: note.url, toDirectory: destination, stem: stem) else { return }
@@ -426,7 +551,33 @@ final class MeetingStore: ObservableObject {
         updated.url = moved
         updated.folder = name.isEmpty ? nil : name
         _ = write(updated)
+        if let attached { relocateNotes(attached, following: updated) }
         reload()
+    }
+
+    /// Keeps a meeting's notes beside it through a rename or a move.
+    ///
+    /// Without this the pair breaks apart on the first rename: the notes keep the
+    /// old stem, `notes-for` points at a meeting id that no longer exists, and
+    /// what was one row becomes two — the exact mess this pairing was added to
+    /// clear up.
+    private func relocateNotes(_ attached: MeetingNote, following meeting: MeetingNote) {
+        let directory = meeting.url.deletingLastPathComponent()
+        let stem = MeetingMarkdown.notesStem(forMeeting: meeting.id)
+
+        var moved = attached
+        moved.notesFor = meeting.id
+        moved.folder = meeting.folder
+        moved.title = (meeting.title.isEmpty ? "Untitled" : meeting.title) + " — Notes"
+
+        let sameDirectory = directory.standardizedFileURL
+            == attached.url.deletingLastPathComponent().standardizedFileURL
+        if stem != attached.id || !sameDirectory,
+           let url = moveFile(at: attached.url, toDirectory: directory, stem: stem) {
+            moved.id = stem
+            moved.url = url
+        }
+        _ = write(moved)
     }
 
     func createFolder(_ name: String) {
@@ -451,6 +602,22 @@ final class MeetingStore: ObservableObject {
         return notes.filter {
             $0.title.range(of: needle, options: options) != nil
                 || $0.body.range(of: needle, options: options) != nil
+        }
+    }
+
+    /// Search across the rows the library actually lists, looking inside each
+    /// meeting's notes as well as its own text — the sentence somebody remembers
+    /// may only exist in the refined version.
+    func searchMeetings(_ query: String) -> [MeetingNote] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return meetings }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        func matches(_ note: MeetingNote) -> Bool {
+            note.title.range(of: needle, options: options) != nil
+                || note.body.range(of: needle, options: options) != nil
+        }
+        return meetings.filter { meeting in
+            matches(meeting) || attachedNotes(for: meeting).map(matches) == true
         }
     }
 

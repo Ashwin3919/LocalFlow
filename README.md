@@ -116,6 +116,8 @@ if it is set to something else.
 | **Fn + Space** | Toggle hands-free explicitly. |
 | **Esc** | Cancel without inserting anything. |
 | **⌘⌃V** | Paste the last transcript again. |
+| **Fn + R** | Start or stop recording a meeting. |
+| **Fn + P** | Pause or resume the meeting. |
 
 Prefer not to use Fn? Settings → Hotkeys switches the trigger to **Ctrl+Option**.
 The app does this automatically if it detects a non-Apple keyboard, where Fn
@@ -126,13 +128,39 @@ with your voice. It goes still when you go quiet, and vanishes when the text
 lands. There is no "Transcribing…" label because it finishes faster than you
 could read one.
 
+### Meetings
+
+**Fn + R** records a meeting. Both sides are transcribed: your microphone becomes
+*You* and the system audio becomes *Them*, so who said what comes from which
+stream it arrived on rather than from any speaker-identification model. A small
+floating window shows the transcript as it happens, with Pause and Stop.
+**Fn + P** pauses — capture stops outright, so the orange microphone indicator
+goes out, which is the point of pausing.
+
+Each meeting is one markdown file in `~/Documents/NotesFM`, and that file is the
+truth: edit it in Finder or any editor and the library picks the change up. The
+library window (menu bar → **NotesFM Library…**, or ⌘L) lists them, searches
+inside them, and sorts them into folders that are real sub-folders on disk.
+
+**Refine into Meeting Notes** is the one button that sends anything anywhere —
+see Privacy below. It writes the notes to their own file next to the recording and
+shows them as a **Notes** tab on the meeting; the raw transcript is never
+rewritten, and refining again replaces the notes rather than piling up copies.
+
 ## Privacy
 
 - The microphone opens when you press the key and closes when you release it.
   Never held open.
-- **No network calls, ever**, other than macOS fetching its own speech models on
-  first launch, and an optional connection to `localhost:11434` if you turn on
-  Ollama cleanup yourself. Off by default.
+- **Recording and transcription are always on-device.** Nothing about them
+  touches a network, for dictation or for meetings.
+- Network traffic happens in exactly three places, and only one of them can carry
+  your words off the machine:
+  - macOS fetching its own speech models, once, on first launch.
+  - `localhost:11434` if you turn on Ollama cleanup yourself. Off by default, and
+    localhost is not the internet.
+  - **Refine into Meeting Notes**, which hands one transcript to the Codex CLI —
+    and Codex does reach OpenAI. Nothing is sent unless you press that button.
+    It uses the Codex sign-in you already have, so no API key is stored here.
 - No analytics, no crash reporting, no third-party SDKs of any kind.
 - Transcript history is a plain text file at
   `~/Library/Application Support/LocalFlow/`. Turn it off in Settings, or delete it.

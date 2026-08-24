@@ -57,9 +57,13 @@ final class NotesFMWindowController {
         // Meetings to read the call they just finished reads it as the window
         // having lost its contents, and there is nothing on screen to suggest
         // clicking the list would bring them back.
+        // `meetings`, not `notes`. Sorting is newest-first with the filename as
+        // the tiebreak, and a notes file shares its meeting's start time with a
+        // higher stem — so `notes.first` was reliably the refined notes rather
+        // than the meeting, and the window opened on a row the list no longer has.
         if selection.noteID == nil
-            || !MeetingStore.shared.notes.contains(where: { $0.id == selection.noteID }) {
-            selection.noteID = MeetingStore.shared.notes.first?.id
+            || !MeetingStore.shared.meetings.contains(where: { $0.id == selection.noteID }) {
+            selection.noteID = MeetingStore.shared.meetings.first?.id
         }
 
         if window == nil {

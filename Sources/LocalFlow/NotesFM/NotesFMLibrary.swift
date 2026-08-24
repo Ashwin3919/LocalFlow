@@ -36,7 +36,7 @@ struct NotesFMLibraryView: View {
     private var sidebar: some View {
         List(selection: $scope) {
             Section("Library") {
-                sidebarRow(.all, title: "All Meetings", systemImage: "tray.full", count: store.notes.count)
+                sidebarRow(.all, title: "All Meetings", systemImage: "tray.full", count: store.meetings.count)
             }
             if !store.folders.isEmpty {
                 Section("Folders") {
@@ -45,7 +45,7 @@ struct NotesFMLibraryView: View {
                             .folder(folder),
                             title: folder,
                             systemImage: "folder",
-                            count: store.notes.count { $0.folder == folder }
+                            count: store.meetings.count { $0.folder == folder }
                         )
                     }
                 }
@@ -106,20 +106,30 @@ struct NotesFMLibraryView: View {
     /// titles that happen to be in memory.
     private var visibleNotes: [MeetingNote] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matching = trimmed.isEmpty ? store.notes : store.search(trimmed)
+        // `meetings`, not `notes`: a refined meeting is one row with two files
+        // behind it, not two rows.
+        let matching = trimmed.isEmpty ? store.meetings : store.searchMeetings(trimmed)
         guard case .folder(let folder) = scope else { return matching }
         return matching.filter { $0.folder == folder }
     }
 
     private var meetingList: some View {
         VStack(spacing: 0) {
+            // Which slice is being listed, in the column that lists it. This used
+            // to be the window's title, but a `navigationTitle` on this column
+            // overwrites the title the window was given, so the titlebar read
+            // "All Meetings" and never said what app it belonged to.
+            Text(scopeTitle)
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
             searchField
             Divider()
             listBody
         }
         .background(Color(nsColor: .controlBackgroundColor))
         .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 420)
-        .navigationTitle(scopeTitle)
     }
 
     private var scopeTitle: String {
@@ -140,7 +150,7 @@ struct NotesFMLibraryView: View {
         } else {
             List(selection: $selection.noteID) {
                 ForEach(notes) { note in
-                    MeetingRow(note: note)
+                    MeetingRow(note: note, hasNotes: store.attachedNotes(for: note) != nil)
                         .tag(note.id)
                         .contextMenu {
                             Button("Reveal in Finder") { store.revealInFinder(note) }
@@ -171,7 +181,7 @@ struct NotesFMLibraryView: View {
             ContentUnavailableView {
                 Label("Empty Folder", systemImage: "folder")
             } description: {
-                Text("Move a meeting here from its ••• menu.")
+                Text("Open a meeting and use the ••• button in the toolbar to move it here.")
             }
         }
     }
@@ -202,7 +212,7 @@ struct NotesFMLibraryView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let note = store.notes.first(where: { $0.id == selection.noteID }) {
+        if let note = store.meetings.first(where: { $0.id == selection.noteID }) {
             MeetingDetailView(store: store, note: note, selectedID: $selection.noteID)
                 // Identity is the note, so switching meetings starts the editor
                 // and its pending save from scratch instead of carrying the
@@ -231,12 +241,35 @@ private enum LibraryScope: Hashable {
 @MainActor
 private struct MeetingRow: View {
     let note: MeetingNote
+    /// Whether Refine has been run on this meeting. Worth a mark in the list: it
+    /// is the difference between a meeting you still have to read and one that
+    /// has already been written up.
+    let hasNotes: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(note.title.isEmpty ? "Untitled" : note.title)
-                .font(.headline)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Text(note.title.isEmpty ? "Untitled" : note.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                if hasNotes {
+                    Image(systemName: "wand.and.stars")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                        .help("Refined notes have been written for this meeting")
+                }
+                // Only shown for a notes file left without its meeting — a stray
+                // duplicate from the old naming, or a recording deleted from
+                // Finder. It stays listed rather than disappearing, because it is
+                // still a file with somebody's words in it.
+                if note.notesFor != nil {
+                    Text("Notes")
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
             HStack(spacing: 6) {
                 Text(note.started.formatted(date: .abbreviated, time: .shortened))
                 if let duration = NotesFMFormat.duration(note.duration) {
@@ -268,11 +301,23 @@ private struct MeetingDetailView: View {
         case raw
     }
 
+    /// Which of the meeting's two files is on screen. The refined notes live in
+    /// their own file so a model's rewrite can never replace the recording, but
+    /// they are still part of the same meeting, so they are a tab here rather
+    /// than another row in the list.
+    private enum Document: Hashable {
+        case transcript
+        case notes
+    }
+
     @State private var mode: Mode = .read
+    @State private var document: Document = .transcript
     @State private var draftTitle: String
     @State private var draftBody: String
+    @State private var draftNotes: String
     @State private var pendingSave: Task<Void, Never>?
     @State private var isConfirmingDelete = false
+    @State private var isConfirmingRefine = false
     @State private var isRefining = false
     @State private var refineError: String?
     @FocusState private var titleFocused: Bool
@@ -283,7 +328,27 @@ private struct MeetingDetailView: View {
         _selectedID = selectedID
         _draftTitle = State(initialValue: note.title)
         _draftBody = State(initialValue: note.body)
+        _draftNotes = State(initialValue: store.attachedNotes(for: note)?.body ?? "")
+        // Somebody who has already refined a meeting opened it to read the notes,
+        // not to re-read the transcript they just refined.
+        _document = State(initialValue: store.attachedNotes(for: note) == nil ? .transcript : .notes)
     }
+
+    /// The notes file for this meeting as it stands on disk, or `nil` if Refine
+    /// has never been run on it.
+    private var notesNote: MeetingNote? { store.attachedNotes(for: note) }
+    private var hasNotes: Bool { notesNote != nil }
+
+    /// The document actually on screen. Every read of the body goes through this
+    /// so the read view, the editor and the character count can never disagree
+    /// about which of the two files is being shown.
+    private var shownText: Binding<String> {
+        showingNotes ? $draftNotes : $draftBody
+    }
+
+    /// `document` alone is not enough: deleting the notes leaves it pointing at a
+    /// file that is gone, and the pane would render an empty editor for it.
+    private var showingNotes: Bool { document == .notes && hasNotes }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -293,7 +358,6 @@ private struct MeetingDetailView: View {
             Divider()
             footer
         }
-        .navigationTitle(note.title)
         .toolbar {
             // The same action as the footer button, in the titlebar. Two places
             // rather than one because the footer is the bottom of a pane that
@@ -301,12 +365,12 @@ private struct MeetingDetailView: View {
             // scrolled past, or clipped by a window restored too small.
             ToolbarItem {
                 Button {
-                    refine()
+                    startRefine()
                 } label: {
-                    Label("Refine into Meeting Notes", systemImage: "wand.and.stars")
+                    Label(refineTitle, systemImage: "wand.and.stars")
                 }
-                .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Rewrite this transcript as meeting notes using the Codex CLI")
+                .disabled(refineDisabled)
+                .help(refineHelp)
             }
             ToolbarItem {
                 Button {
@@ -336,8 +400,48 @@ private struct MeetingDetailView: View {
             Button("Delete", role: .destructive) { delete() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The meeting's markdown file is moved to the Trash.")
+            Text(hasNotes
+                 ? "The meeting's markdown file and its notes are moved to the Trash."
+                 : "The meeting's markdown file is moved to the Trash.")
         }
+        // Refining again overwrites notes somebody may have edited by hand, so it
+        // asks. The first refine never does — there is nothing to lose yet.
+        .confirmationDialog(
+            "Replace the existing notes?",
+            isPresented: $isConfirmingRefine
+        ) {
+            Button("Refine Again", role: .destructive) { refine() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The transcript is untouched either way. Any edits you made to "
+                 + "the notes themselves will be overwritten.")
+        }
+    }
+
+    // MARK: Refine wording
+
+    private var refineTitle: String {
+        hasNotes ? "Refine Again" : "Refine into Meeting Notes"
+    }
+
+    private var refineDisabled: Bool {
+        isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var refineCaption: String {
+        if isRefining { return "Codex is working. A long meeting can take a couple of minutes." }
+        if hasNotes {
+            return "Sends the transcript to Codex again and replaces these notes. "
+                + "The recording itself is never touched, and nothing else in this app leaves your Mac."
+        }
+        return "Sends this transcript to Codex. The notes are saved as a new file beside it; "
+            + "nothing else in this app leaves your Mac."
+    }
+
+    private var refineHelp: String {
+        hasNotes
+            ? "Run the transcript through the Codex CLI again, replacing these notes"
+            : "Rewrite this transcript as meeting notes using the Codex CLI"
     }
 
     private var actionsMenu: some View {
@@ -356,8 +460,14 @@ private struct MeetingDetailView: View {
             }
             Divider()
             Button("Reveal in Finder") { store.revealInFinder(note) }
+            if let notesNote {
+                Button("Reveal Notes in Finder") { store.revealInFinder(notesNote) }
+            }
             Divider()
-            Button("Delete", role: .destructive) { isConfirmingDelete = true }
+            if hasNotes {
+                Button("Delete Notes", role: .destructive) { deleteNotes() }
+            }
+            Button("Delete Meeting", role: .destructive) { isConfirmingDelete = true }
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
@@ -374,7 +484,11 @@ private struct MeetingDetailView: View {
                 .onSubmit { commitTitle() }
 
             HStack(spacing: 6) {
-                Text(note.started.formatted(date: .long, time: .shortened))
+                // Abbreviated, not `.long`. This row shares its width with two
+                // segmented controls, and the long form wrapped the date onto a
+                // second line, which pushed the whole header taller.
+                Text(note.started.formatted(date: .abbreviated, time: .shortened))
+                    .lineLimit(1)
                 if let duration = NotesFMFormat.duration(note.duration) {
                     Text("·")
                     Text(duration)
@@ -382,15 +496,30 @@ private struct MeetingDetailView: View {
                 if let folder = note.folder {
                     Text("·")
                     Label(folder, systemImage: "folder")
+                        .lineLimit(1)
                 }
-                Spacer()
+                Spacer(minLength: 8)
+                // Only when there is something to switch to. A two-way control
+                // with one reachable side is worse than no control.
+                if hasNotes {
+                    Picker("Document", selection: $document) {
+                        Text("Notes").tag(Document.notes)
+                        Text("Transcript").tag(Document.transcript)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 155)
+                    // Both files are editable, so leaving one is the moment to be
+                    // sure it reached disk before the other is shown.
+                    .onChange(of: document) { _, _ in saveNow() }
+                }
                 Picker("Mode", selection: $mode) {
                     Text("Read").tag(Mode.read)
                     Text("Raw").tag(Mode.raw)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 150)
+                .frame(width: 100)
                 // Leaving the editor is a natural moment to be sure the file on
                 // disk matches what is on screen.
                 .onChange(of: mode) { _, new in
@@ -418,7 +547,7 @@ private struct MeetingDetailView: View {
         // ellipsis.
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                refine()
+                startRefine()
             } label: {
                 HStack(spacing: 6) {
                     if isRefining {
@@ -426,34 +555,51 @@ private struct MeetingDetailView: View {
                     } else {
                         Image(systemName: "wand.and.stars")
                     }
-                    Text(isRefining ? "Refining…" : "Refine into Meeting Notes")
+                    Text(isRefining ? "Refining…" : refineTitle)
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .controlSize(.large)
-            .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help("Rewrite this transcript as meeting notes using the Codex CLI")
+            .disabled(refineDisabled)
+            .help(refineHelp)
 
+            // No `fixedSize(vertical:)` here, and this is the whole reason the
+            // window was unusable. It forces the text to its wrapped height,
+            // which becomes the footer's *minimum* height; measured at the
+            // narrowest width the detail column is allowed, a sentence this long
+            // wraps far enough to make the pane's minimum taller than the window.
+            // SwiftUI then lays the split view out at that minimum and centres
+            // the overflow, so the sidebar's rows sat above the titlebar and this
+            // button sat 1029pt below the sill. `lineLimit` lets the caption
+            // wrap as far as it needs while keeping the floor bounded.
             if let refineError {
                 Label(refineError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
             } else {
-                Text(isRefining
-                     ? "Codex is working. A long meeting can take a couple of minutes."
-                     : "Sends this transcript to Codex and saves the notes as a new file beside it. Nothing else in this app leaves your Mac.")
+                Text(refineCaption)
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    /// Asks first only when there are notes to lose.
+    private func startRefine() {
+        guard !isRefining else { return }
+        if hasNotes {
+            isConfirmingRefine = true
+        } else {
+            refine()
+        }
     }
 
     private func refine() {
@@ -463,18 +609,24 @@ private struct MeetingDetailView: View {
         isRefining = true
         refineError = nil
 
+        // Always the transcript, never whichever document happens to be on
+        // screen: refining the notes would be refining a refinement.
         let transcript = draftBody
         let title = draftTitle
         let source = note
 
         Task {
             do {
-                let notes = try await Refine.notes(from: transcript, title: title)
+                let written = try await Refine.notes(from: transcript, title: title)
                 isRefining = false
-                // Selecting the new note replaces this view, so the flag is
-                // cleared first — nothing should be left mutating a dead view.
-                if let id = store.createSibling(of: source, titleSuffix: " — Notes", body: notes) {
-                    selectedID = id
+                if store.writeNotes(for: source, body: written) != nil {
+                    // Read the body back from the store rather than reusing the
+                    // string: the store normalises the trailing newline, and a
+                    // draft that differs from disk by one character would look
+                    // dirty and schedule a pointless write.
+                    draftNotes = store.attachedNotes(for: source)?.body ?? written
+                    document = .notes
+                    mode = .read
                 } else {
                     refineError = "Notes were written but could not be saved."
                 }
@@ -495,24 +647,27 @@ private struct MeetingDetailView: View {
             ScrollView {
                 // Renders the draft rather than the saved note so the read view
                 // never lags a debounce behind the raw editor.
-                MarkdownText(markdown: draftBody)
+                MarkdownText(markdown: shownText.wrappedValue)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
             }
             .textSelection(.enabled)
             .background(Color(nsColor: .textBackgroundColor))
         case .raw:
-            TextEditor(text: $draftBody)
+            TextEditor(text: shownText)
                 .font(.system(.body, design: .monospaced))
                 .padding(12)
                 .background(Color(nsColor: .textBackgroundColor))
-                .onChange(of: draftBody) { _, new in scheduleSave(body: new) }
+                // Two `onChange`es rather than one on `shownText`, because a
+                // binding is not Equatable and each document saves to its own file.
+                .onChange(of: draftBody) { _, _ in scheduleSave() }
+                .onChange(of: draftNotes) { _, _ in scheduleSave() }
         }
     }
 
     // MARK: Saving
 
-    /// This note as it stands on screen, unsaved edits included. Every store
+    /// The transcript as it stands on screen, unsaved edits included. Every store
     /// call goes through here so an edit that is still inside the debounce
     /// window is carried along instead of being overwritten by the stale copy.
     private var edited: MeetingNote {
@@ -521,30 +676,58 @@ private struct MeetingDetailView: View {
         return updated
     }
 
+    /// The notes file as it stands on screen, or `nil` when there are none.
+    private var editedNotes: MeetingNote? {
+        guard var updated = notesNote else { return nil }
+        updated.body = draftNotes
+        return updated
+    }
+
+    /// The files whose draft differs from disk. Two documents share one debounce,
+    /// so this is what decides which of them a write actually has to touch —
+    /// saving the untouched one would rewrite a file for no reason and, worse,
+    /// stamp it over an edit made in another editor.
+    private func pendingWrites() -> [MeetingNote] {
+        var result: [MeetingNote] = []
+        if draftBody != note.body { result.append(edited) }
+        if let current = notesNote, let editedNotes, editedNotes.body != current.body {
+            result.append(editedNotes)
+        }
+        return result
+    }
+
     /// Typing is a disk write, so it is debounced: every keystroke replaces the
     /// pending write instead of adding one.
-    private func scheduleSave(body: String) {
+    private func scheduleSave() {
         pendingSave?.cancel()
         // Everything the write needs is captured by value now, because the task
         // deliberately outlives the view — closing the window tears the view
         // down without an `onDisappear`, and the last keystrokes still have to
         // reach disk.
         let store = self.store
-        var pending = note
-        pending.body = body
+        let pending = pendingWrites()
+        guard !pending.isEmpty else { return }
         pendingSave = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            // The note may have been renamed, moved or deleted in the meantime.
-            guard store.notes.contains(where: { $0.id == pending.id }) else { return }
-            store.save(pending)
+            for file in pending {
+                // The file may have been renamed, moved or deleted in the meantime.
+                guard store.notes.contains(where: { $0.id == file.id }) else { continue }
+                store.save(file)
+            }
         }
     }
 
     private func saveNow() {
         cancelPendingSave()
-        guard draftBody != note.body else { return }
-        store.save(edited)
+        for file in pendingWrites() { store.save(file) }
+    }
+
+    private func deleteNotes() {
+        cancelPendingSave()
+        store.deleteNotes(for: note)
+        draftNotes = ""
+        document = .transcript
     }
 
     private func cancelPendingSave() {

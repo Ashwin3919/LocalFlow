@@ -25,6 +25,14 @@ struct MeetingNote: Identifiable, Hashable, Sendable {
     var duration: TimeInterval
     /// Sub-folder relative to the store root; `nil` means the root itself.
     var folder: String?
+    /// The id of the meeting this file holds the refined notes *for*, or `nil`
+    /// for an actual recording.
+    ///
+    /// Refine writes its output to its own file — a model's rewrite must never be
+    /// able to replace the record of what was said — but a second top-level row
+    /// in the library is not what that separation was for. This is the link that
+    /// lets one row stay one meeting while the notes live in their own file.
+    var notesFor: String? = nil
     /// Everything after the YAML frontmatter.
     var body: String
 

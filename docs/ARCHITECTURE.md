@@ -943,8 +943,8 @@ flowchart TD
     WAIT -->|"non-zero status"| ERR2([report the stderr tail])
     WAIT -->|"zero"| READ[read the answer file]
     READ --> FENCE[strip a whole-answer<br/>markdown fence]
-    FENCE --> SIB[["createSibling writes<br/>… — Notes.md"]]
-    SIB --> SEL([select the new note])
+    FENCE --> SIB[["writeNotes writes<br/>&lt;meeting&gt;-notes.md<br/><i>notes-for: &lt;stem&gt;</i>"]]
+    SIB --> SEL([switch to the meeting's<br/>Notes tab])
 
     style BTN fill:#2d6a4f,stroke:#1b4332,color:#fff
     style SIB fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -959,10 +959,22 @@ subscription they already pay for is the credential.
 
 ### Five constraints, each one deliberate
 
-- **A separate file, always.** `createSibling` writes `… — Notes.md` beside the
+- **A separate file, always.** `writeNotes` writes `<meeting>-notes.md` beside the
   recording. A model's rewrite of what was said must never be able to overwrite
   what was actually recorded. The self-test asserts the transcript is
   byte-identical afterwards.
+- **A separate file, but not a separate meeting.** The notes carry
+  `notes-for: <meeting stem>` in their frontmatter, and the library folds them
+  into the meeting they came from as a `Notes | Transcript` switch. Without that
+  link they sorted *above* their own transcript — same `started`, higher filename
+  as the tiebreak — so the library opened on the notes and the recording read as a
+  duplicate beneath them. The filename is **derived, not uniqued**, so pressing
+  the button twice replaces the notes instead of leaving `… — Notes 2` behind.
+  `MeetingStore.notes` remains the flat on-disk truth; `meetings` is what the
+  library lists, and `attachments` maps each meeting to its notes. Files written
+  before the key existed are paired by filename at load time, in memory only —
+  nothing rewrites a file the user did not ask it to touch. A notes file whose
+  meeting is gone stays listed rather than disappearing.
 - **`--sandbox read-only`, in a temporary directory.** Codex is an *agentic
   coding tool* that can edit files and run commands. Here it is a text transform,
   and it is given no means to be anything else.
@@ -984,6 +996,39 @@ subscription they already pay for is the credential.
 Missing CLI, not signed in, timeout, non-zero exit — each produces a specific
 sentence beside the button. The transcript is untouched in every one of those
 cases, which is the property that makes the button safe to press.
+
+### The footer that pushed the whole window out of itself
+
+Worth recording, because the symptom pointed everywhere except the cause. The
+caption under the green button carried
+`.fixedSize(horizontal: false, vertical: true)` so it would wrap rather than
+truncate in a narrow pane. `fixedSize` makes a view take its *ideal* height, and
+that height becomes the pane's **minimum**. Measured at the narrowest width the
+detail column allows, one long sentence wrapped far enough that the pane's minimum
+was taller than the window — and SwiftUI, given a proposal smaller than a
+subview's minimum, lays out at the minimum and centres the overflow.
+
+Result, measured through the accessibility tree on the live window:
+
+```
+window            y −1022 … −249   (773pt tall)
+split view        y −1297, 1376pt  ← centred, so 275pt above and 328pt below
+  title field     y −1283          261pt above the top edge
+  search field    y −1283          above
+  Read/Raw        y −1253          above
+  Refine button   y      7         1029pt BELOW the bottom edge
+```
+
+The sidebar looked blank and the detail pane empty because their contents were
+outside the window, not missing from it. The longer the transcript, the further out
+the buttons went, which is why it only broke once real meetings existed.
+`lineLimit` wraps without pinning a floor.
+
+`NSHostingController.sizingOptions` is the obvious suspect here — it matches
+Apple's own wording that "the content will be centered within that frame" — and a
+standalone harness proved it changes nothing, on the controller, on its
+`NSHostingView`, or both. It is documented as a dead end in `NOTES.md` so nobody
+spends the afternoon on it again.
 
 > **`PATH` gotcha.** A GUI app does not inherit the shell's `PATH`.
 > `Refine.locate()` checks where the CLI actually installs (`~/.local/bin`,
@@ -1086,11 +1131,11 @@ automatically and falls back to ad-hoc if it is absent.
 | `MicMeetingSource.swift` | microphone, its own `AVAudioEngine`, honours the chosen device, rebuilds on a device change |
 | `SystemAudioSource.swift` | Core Audio process tap — the hardest file here |
 | `MeetingWriter.swift` | append-only markdown, flushes every 15 s, stamps duration at the end |
-| `MeetingStore.swift` | markdown + frontmatter, lenient parsing, folder scan, rename/move/delete/search |
+| `MeetingStore.swift` | markdown + frontmatter, lenient parsing, folder scan, rename/move/delete/search, notes pairing |
 | `MeetingHUD.swift` | `KeyableMeetingPanel` — the floating window shown while recording |
 | `NotesFMWindow.swift` / `NotesFMLibrary.swift` | `NSWindow` host and the SwiftUI three-pane library |
 | `Refine.swift` | the Codex CLI bridge — locate, prompt, run sandboxed, unwrap the answer |
-| `SelfTest.swift` | `--notesfm-selftest`, 59 checks, no microphone and no network required |
+| `SelfTest.swift` | `--notesfm-selftest`, 83 checks, no microphone and no network required |
 | `CaptureTest.swift` | **Test Audio Capture…**, the only way to check the system-audio grant |
 
 ---
@@ -1109,7 +1154,7 @@ Taken from a real session on macOS 26.5.2, Apple Silicon, 32 GB.
 | Transcription, 5.06 s audio | **185 ms** (≈27× realtime) | — |
 | Release → text on screen | **290 ms** | < 1 s ✅ |
 | Mic open latency | **52–70 ms** | — |
-| `--notesfm-selftest` | **59 / 59** | durability, round trip, note stamping, pause clock, transcript format, refine plumbing ✅ |
+| `--notesfm-selftest` | **83 / 83** | durability, round trip, note stamping, pause clock, transcript format, refine plumbing, notes pairing ✅ |
 | Refine round trip | **8.7 s** | ~1 kB transcript, through the app binary |
 | Build warnings | **0** | Swift 6 strict concurrency on ✅ |
 
@@ -1133,22 +1178,20 @@ Honest status, so nobody assumes more than was tested. Compiling is not evidence
 
 **Meetings (Part II)**
 
-- **Any real system-audio capture.** `kTCCServiceAudioCapture` has never been
-  granted on the development machine, so the *Them* half of every diagram in
-  Part II is reasoned from documentation, not observed.
-- **A real meeting, of any length.** The multi-hour question is answered by docs
-  only.
+- **A real meeting of any real length.** System-audio capture itself *is* now
+  observed — `kTCCServiceAudioCapture` is granted here and the log line
+  `system audio confirmed` has been seen on a 5-minute call, which is also what
+  proved the echo problem. The multi-hour question is still answered by docs only.
 - **Pause and resume against live audio.** `MeetingClock` is unit-tested;
   stopping and rebuilding a real microphone graph and a real process tap
   mid-meeting is not.
 - **A long pause with the analyzer left idle.** Nothing documents what
   `SpeechAnalyzer` does when its input goes quiet for an hour.
-- **Typing into the HUD note field.** The panel fix follows from the SDK, but no
-  keystroke has been observed landing in it.
-- **The Refine button itself.** The code behind it is proven — `--notesfm-refine`
-  drives the same `Refine.notes` through the app binary and returned real notes in
-  8.7 s — but nobody has *clicked* it, so the SwiftUI state, the green tint and the
-  jump to the new note are unobserved.
+- **Pressing Refine and getting notes back, since the pairing change.** The button
+  is now observed — it draws, enables and disables, reads "Refine Again" when notes
+  exist, and the `Notes | Transcript` switch it lands on works. `writeNotes` is
+  covered by the self-test. The full button → Codex → notes round trip has not been
+  re-run against it.
 - **A long transcript through Refine.** Exercised at roughly 1 kB. A two-hour
   meeting is a different proposition, and the 240 s timeout is a guess rather than
   a measurement.
@@ -1157,16 +1200,40 @@ Honest status, so nobody assumes more than was tested. Compiling is not evidence
   speaker breaks to lean on, has not been seen.
 - **The microphone surviving an input-device change mid-meeting**, and meetings
   honouring the chosen device.
-- `Fn+P`, and `Fn+R` now that it no longer trips the dictation guard.
-- The library sidebar and toolbar rendering.
+- `Fn+P`, and `Fn+R` now that it no longer trips the dictation guard. Starting and
+  stopping a meeting from the **menu** is observed; the hotkeys themselves are not.
 
 **Verified since the last revision**
 
+- **The library window draws inside itself.** It had been drawing its own controls
+  *outside* the window: 1376pt of content in a 773pt window, title field 261pt
+  above the top edge, the green Refine button 1029pt below the bottom. One
+  `.fixedSize(horizontal: false, vertical: true)` on the footer caption pinned the
+  detail pane's *minimum* height above the window's, and SwiftUI lays out at the
+  minimum and centres the overflow. After replacing it with `lineLimit`: content
+  721pt against a 721pt host, **0 of 14 controls outside the window**, and a real
+  `CGEvent` click on a list row switches the detail pane.
+- **The sidebar and the toolbar do render** — the wand, the folder and the ••• are
+  all present, and the sidebar's rows and its New Folder button were only ever
+  missing because they sat above the window's top edge.
 - The installer from a clean clone: checks → certificate → build → sign →
   `/Applications` → launch, then `--notesfm-selftest` from the installed binary.
   Accessibility and Input Monitoring survived being rebuilt from a **different
   directory**, which is the claim the `make-cert.sh` decision rests on and had
   not previously been demonstrated.
+
+**Known broken — measured, not suspected**
+
+- **Typing into the meeting HUD's note field does not work.** Listed above in an
+  earlier revision as merely unverified; it is a defect. A real `CGEvent` click —
+  an accessibility press never reaches `sendEvent` — gives the field first
+  responder (`AXFocused` true) and a real keystroke still lands in the frontmost
+  application. Keyboard input goes to the key window of the *active* app, and an
+  accessory app is never active on its own; `NSApplication.h` states that
+  `activate()` "does not guarantee that the app will be activated at all".
+  Dropping `.nonactivatingPanel` made it worse: the click then did not focus the
+  field at all. A fix needs a route that activates the app from a click macOS
+  honours, most likely the status menu. See the dead ends in `NOTES.md`.
 
 **Known open risks**
 
