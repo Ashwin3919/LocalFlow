@@ -11,3 +11,6 @@ cert.pem
 
 # macOS
 .DS_Store
+
+# Release artifacts
+dist/
