@@ -73,6 +73,7 @@ final class SetupWindowController: NSObject {
             PermissionRow(
                 name: "Microphone",
                 why: "To hear you. The orange dot appears only while you dictate.",
+                tccService: "Microphone",
                 check: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
                 act: {
                     if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
@@ -87,6 +88,10 @@ final class SetupWindowController: NSObject {
             PermissionRow(
                 name: "Accessibility",
                 why: "To place text into the app you are typing in.",
+                // The TCC service name tccutil uses for this permission. Present so
+                // the row can offer a self-heal when the switch is on but the tick
+                // never turns green — see PermissionRow.resetTapped.
+                tccService: "Accessibility",
                 check: { AXIsProcessTrusted() },
                 act: {
                     // Prompting first makes LocalFlow appear in the list with a
@@ -100,6 +105,7 @@ final class SetupWindowController: NSObject {
             PermissionRow(
                 name: "Input Monitoring",
                 why: "To notice when you hold the Fn key, even in another app.",
+                tccService: "ListenEvent",
                 check: { CGPreflightListenEventAccess() },
                 act: {
                     _ = CGRequestListenEventAccess()
@@ -247,28 +253,46 @@ extension SetupWindowController: NSWindowDelegate {
 private final class PermissionRow {
     let name: String
     let optional: Bool
+    /// The service name tccutil keys this permission under, or nil if it has none
+    /// (the Fn-key row is a keyboard setting, not a TCC grant). When present, the
+    /// row can clear a stale entry itself instead of needing a hand at a terminal.
+    private let tccService: String?
     private let check: () -> Bool
     private let act: () -> Void
 
     private(set) var isGranted = false
+    /// Set the first time the user taps the primary button. The reset affordance
+    /// only appears after this, so it never greets someone who has not yet tried.
+    private var hasAttempted = false
 
     let view = NSStackView()
     private let glyph = NSTextField(labelWithString: "○")
     private let button: NSButton
+    private let resetButton: NSButton
 
     init(name: String,
          why: String,
          optional: Bool = false,
+         tccService: String? = nil,
          check: @escaping () -> Bool,
          act: @escaping () -> Void) {
         self.name = name
         self.optional = optional
+        self.tccService = tccService
         self.check = check
         self.act = act
 
         button = NSButton(title: "Open", target: nil, action: nil)
         button.bezelStyle = .push
         button.controlSize = .small
+
+        resetButton = NSButton(title: "Reset & retry", target: nil, action: nil)
+        resetButton.bezelStyle = .push
+        resetButton.controlSize = .small
+        resetButton.isHidden = true
+        resetButton.toolTip = "Switched it on but the tick is still grey? macOS is "
+            + "probably holding a stale entry from an older build. This clears it "
+            + "and asks again — the same fix, without a terminal."
 
         glyph.font = .systemFont(ofSize: 15, weight: .bold)
         glyph.widthAnchor.constraint(equalToConstant: 18).isActive = true
@@ -289,18 +313,46 @@ private final class PermissionRow {
         view.alignment = .centerY
         view.spacing = 10
         view.setViews([glyph, text], in: .leading)
-        view.setViews([button], in: .trailing)
+        view.setViews([resetButton, button], in: .trailing)
 
         button.target = self
         button.action = #selector(tapped)
+        resetButton.target = self
+        resetButton.action = #selector(resetTapped)
     }
 
-    @objc private func tapped() { act() }
+    @objc private func tapped() {
+        hasAttempted = true
+        act()
+    }
+
+    /// The self-heal the user otherwise needs a terminal for. `tccutil reset`
+    /// clears this app's stored decision for one service, so the next request
+    /// lands on the current signature instead of a stale one, and the tick can
+    /// finally turn green. Resetting one's own bundle needs no admin rights.
+    @objc private func resetTapped() {
+        guard let tccService else { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        task.arguments = ["reset", tccService, "com.localflow.app"]
+        do {
+            try task.run()
+            task.waitUntilExit()
+            Log.write("Reset TCC \(tccService) for com.localflow.app (setup self-heal)")
+        } catch {
+            Log.write("tccutil reset \(tccService) failed: \(error)")
+        }
+        // Re-request straight away so the fresh prompt/pane is right there.
+        act()
+    }
 
     func refresh() {
         isGranted = check()
         glyph.stringValue = isGranted ? "●" : "○"
         glyph.textColor = isGranted ? .systemGreen : .tertiaryLabelColor
         button.isHidden = isGranted
+        // Only offer the reset once someone has tried and is still stuck, and only
+        // for a permission that actually has a TCC entry to clear.
+        resetButton.isHidden = !(tccService != nil && !isGranted && hasAttempted)
     }
 }
