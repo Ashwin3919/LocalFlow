@@ -13,7 +13,7 @@ import AVFoundation
 /// first launch for every new user, and importing SwiftUI costs roughly 20 MB
 /// of resident memory that never comes back.
 @MainActor
-final class SetupWindowController {
+final class SetupWindowController: NSObject {
     private var window: NSWindow?
     private var rows: [PermissionRow] = []
     private var timer: Timer?
@@ -33,6 +33,12 @@ final class SetupWindowController {
         if window == nil { build() }
         refresh()
         startPolling()
+        // An accessory (LSUIElement) app cannot reliably front a window or
+        // surface a microphone TCC prompt: both need the app to be a regular,
+        // activatable app. Promote for the life of this window — otherwise the
+        // Microphone button's requestAccess never presents its dialog — and drop
+        // back to accessory on close so the Dock icon does not linger.
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         window?.makeKeyAndOrderFront(nil)
@@ -41,6 +47,7 @@ final class SetupWindowController {
     func close() {
         stopPolling()
         window?.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     // MARK: - Construction
@@ -69,7 +76,9 @@ final class SetupWindowController {
                 check: { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized },
                 act: {
                     if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+                        AVCaptureDevice.requestAccess(for: .audio) { granted in
+                            Log.write("Microphone permission \(granted ? "granted" : "denied")")
+                        }
                     } else {
                         Self.open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
                     }
@@ -141,7 +150,10 @@ final class SetupWindowController {
         stack.spacing = 14
         stack.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 20, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        buttons.setCustomSpacing(20, after: summary)
+        // summary lives in `stack`, not in `buttons`; setCustomSpacing raises an
+        // exception when the view is not its own arranged subview, and that thrown
+        // exception is what silently aborted build() so the window never appeared.
+        stack.setCustomSpacing(20, after: summary)
 
         let container = NSView()
         container.addSubview(stack)
@@ -165,7 +177,7 @@ final class SetupWindowController {
         window.title = "LocalFlow Setup"
         window.contentView = container
         window.isReleasedWhenClosed = false
-        window.delegate = nil
+        window.delegate = self
         self.window = window
     }
 
@@ -216,6 +228,15 @@ final class SetupWindowController {
     private static func open(_ string: String) {
         guard let url = URL(string: string) else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+extension SetupWindowController: NSWindowDelegate {
+    // The two buttons route through close(); the title-bar close button does not,
+    // so drop back to accessory here as well or the Dock icon outlives the window.
+    func windowWillClose(_ notification: Notification) {
+        stopPolling()
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
