@@ -12,6 +12,9 @@ seeing text is about **290 ms**.
 
 Supports **English and German**, switching automatically.
 
+Built by [Ashwin Shirke](https://github.com/Ashwin3919) — a single-maintainer
+project, made to avoid paying for a cloud dictation subscription.
+
 ---
 
 ## Requirements
