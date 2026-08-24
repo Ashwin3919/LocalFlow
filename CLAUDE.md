@@ -73,7 +73,18 @@ Sources/LocalFlow/NotesFM/
 
 **Signing uses `make-cert.sh`, never ad-hoc.** An ad-hoc signature's designated requirement is the cdhash, which changes every rebuild, so macOS treats each build as a new app and **revokes Accessibility and Input Monitoring**. A self-signed cert makes the requirement depend on the certificate instead.
 
-**Distribution is source-based, deliberately.** A prebuilt `.app` needs a paid Developer ID to notarize, or users click through security warnings. An app compiled on the user's own machine carries no quarantine flag, so Gatekeeper never objects.
+**Distribution is source-based by default; `./build.sh release` is the escape
+hatch.** A prebuilt `.app` needs a paid Developer ID to notarize, or users click
+through security warnings. An app compiled on the user's own machine carries no
+quarantine flag, so Gatekeeper never objects. The release zip exists anyway,
+because handing somebody a file beats talking them through a clone — and it pays
+the documented price: `spctl` **rejects** it, so the recipient must go to
+System Settings → Privacy & Security → Open Anyway. Control-clicking has not
+worked for this since macOS 15, so `INSTALL.txt` ships inside the zip. The pack
+step refuses an ad-hoc signature: a cdhash designated requirement would make each
+update look like a new app and revoke the recipient's Accessibility and Input
+Monitoring. Notarizing later needs `--timestamp` instead of `--timestamp=none`;
+`--options runtime` is already there.
 
 **Transcripts are plain prose by default, not `**[00:04:12] You** —` lines.** The file is read end to end and then handed to a model; a wall of timestamped speaker prefixes serves neither. Dual capture still does the work it was built for — two streams are what allow both sides to be transcribed at all — the labels simply stop being printed. `Settings → Meetings` turns them back on, and `TranscriptStyle` is the switch. Typed notes stay as `>` blockquotes so the user's own words are never put in a speaker's mouth.
 
