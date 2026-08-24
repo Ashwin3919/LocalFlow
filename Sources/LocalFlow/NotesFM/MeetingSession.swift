@@ -76,7 +76,12 @@ final class MeetingSession: ObservableObject {
         let locale = Locale(identifier: Settings.shared.meetingLocale)
 
         do {
-            writer = try MeetingWriter(root: NotesFM.defaultRoot, title: title, started: started)
+            writer = try MeetingWriter(
+                root: NotesFM.defaultRoot,
+                title: title,
+                started: started,
+                style: Settings.shared.meetingTranscriptStyle
+            )
         } catch {
             fail("Could not create the meeting file: \(error.localizedDescription)")
             return

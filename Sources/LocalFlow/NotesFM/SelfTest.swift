@@ -24,7 +24,12 @@ enum NotesFMSelfTest {
         print("root: \(root.path)\n")
 
         // 1. A recording session, as it happens live.
-        guard let writer = try? MeetingWriter(root: root, title: "Weekly Sync: Q3 planning", started: Date()) else {
+        // Explicitly labelled: `.plain` is the default now, and section 7 covers
+        // it. This section exists to keep the labelled format honest for anyone
+        // who turns it back on in Settings.
+        guard let writer = try? MeetingWriter(
+            root: root, title: "Weekly Sync: Q3 planning", started: Date(), style: .labelled
+        ) else {
             print("  FAIL could not create writer")
             return 1
         }
@@ -160,7 +165,74 @@ enum NotesFMSelfTest {
                   && NotesFM.spanDescription(45) == "45s"
                   && NotesFM.spanDescription(3700) == "1h 1m")
 
-        // 7. Search.
+        // 7. The plain transcript format — the default, and what Refine reads.
+        let plainRoot = root.appendingPathComponent("plain", isDirectory: true)
+        guard let plain = try? MeetingWriter(
+            root: plainRoot, title: "Plain style", started: Date(), style: .plain
+        ) else {
+            print("  FAIL could not create a plain writer")
+            return 1
+        }
+        plain.append(speaker: .you, at: 4.0, text: "Let's start with the migration.")
+        plain.append(speaker: .them, at: 12.0, text: "Did the rollback plan get reviewed?")
+        plain.appendNote("check rollback before Friday", at: 13.0)
+        plain.appendMarker("paused for 3m 20s", at: 20.0)
+        plain.finish(duration: 30)
+        let plainText = (try? String(contentsOf: plain.url, encoding: .utf8)) ?? ""
+        let plainBody = plainText.components(separatedBy: "---").last ?? ""
+
+        check("plain style writes no timestamps", !plainBody.contains("00:00:"))
+        check("plain style writes no speaker labels",
+              !plainBody.contains("You**") && !plainBody.contains("Them**"))
+        check("plain style keeps every spoken word",
+              plainBody.contains("Let's start with the migration.")
+                  && plainBody.contains("Did the rollback plan get reviewed?"))
+        check("a typed note stays distinguishable as a quote",
+              plainBody.contains("> check rollback before Friday"))
+        check("the pause marker survives in plain style",
+              plainBody.contains("_— paused for 3m 20s —_"))
+        check("blocks are separated by a blank line, so markdown sees paragraphs",
+              plainBody.contains("Let's start with the migration.\n\nDid the rollback"))
+
+        // 8. Refine plumbing. The network call itself is not exercised — this is
+        //    the part that can be wrong without anyone noticing.
+        check("fence-wrapped answers are unwrapped",
+              Refine.stripFence("```markdown\n# Notes\n\n- one\n```") == "# Notes\n\n- one")
+        check("a code block inside real notes is left alone",
+              Refine.stripFence("# Notes\n\n```sh\nls\n```") == "# Notes\n\n```sh\nls\n```")
+        check("unfenced answers pass through untouched",
+              Refine.stripFence("# Notes\n\n- one") == "# Notes\n\n- one")
+        let builtPrompt = Refine.prompt(title: "Weekly Sync", transcript: "we ship Thursday")
+        check("the prompt carries the transcript and forbids invention",
+              builtPrompt.contains("we ship Thursday")
+                  && builtPrompt.contains("Invent nothing")
+                  && builtPrompt.contains("Weekly Sync"))
+
+        // 9. Refined notes are written beside the transcript, never over it.
+        let transcriptBefore = (try? String(contentsOf: writer.url, encoding: .utf8)) ?? ""
+        guard let siblingID = store.createSibling(
+            of: note, titleSuffix: " — Notes", body: "# Notes\n\n- decided to ship Thursday\n"
+        ) else {
+            print("  FAIL createSibling returned nothing")
+            return 1
+        }
+        let transcriptAfter = (try? String(contentsOf: writer.url, encoding: .utf8)) ?? ""
+        check("the original transcript file is byte-identical afterwards",
+              transcriptBefore == transcriptAfter)
+        check("the notes landed in a different file", siblingID != note.id)
+        check("the notes are titled from the meeting",
+              store.notes.contains { $0.id == siblingID && $0.title == "Weekly Sync: Q3 planning — Notes" })
+        check("the notes carry no duration, having recorded no audio",
+              store.notes.first { $0.id == siblingID }?.duration == 0)
+        check("the notes body was written",
+              store.notes.first { $0.id == siblingID }?.body.contains("ship Thursday") == true)
+        if let refined = store.notes.first(where: { $0.id == siblingID }) {
+            let twice = store.createSibling(of: refined, titleSuffix: " — Notes", body: "x")
+            check("refining a refined note does not stack the suffix",
+                  twice != nil && store.notes.first { $0.id == twice }?.title == refined.title)
+        }
+
+        // 10. Search.
         check("search finds by body text", !store.search("rollback").isEmpty)
         check("search is case-insensitive", !store.search("ROLLBACK").isEmpty)
         check("search misses nonsense", store.search("zzzznotpresent").isEmpty)

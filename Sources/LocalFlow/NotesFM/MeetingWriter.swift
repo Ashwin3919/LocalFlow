@@ -29,6 +29,7 @@ final class MeetingWriter: @unchecked Sendable {
 
     private let fileURL: URL
     private let started: Date
+    private let style: TranscriptStyle
 
     /// Guards the buffered lines. Cheap and uncontended.
     private let lock = NSLock()
@@ -56,10 +57,11 @@ final class MeetingWriter: @unchecked Sendable {
 
     var url: URL { fileURL }
 
-    init(root: URL, title: String, started: Date) throws {
+    init(root: URL, title: String, started: Date, style: TranscriptStyle = .plain) throws {
         let clean = MeetingMarkdown.singleLine(title).trimmingCharacters(in: .whitespacesAndNewlines)
         let heading = clean.isEmpty ? "Untitled meeting" : clean
         self.started = started
+        self.style = style
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let stem = MeetingMarkdown.uniqueStem(title: heading, started: started, in: root)
@@ -174,19 +176,30 @@ final class MeetingWriter: @unchecked Sendable {
     /// Caller must hold `lock`.
     private func closeOpenLine() {
         guard let current = open else { return }
-        pending.append(Self.render(speaker: current.speaker, at: current.start, text: current.text))
+        pending.append(render(speaker: current.speaker, at: current.start, text: current.text))
         open = nil
     }
 
-    private static func render(speaker: Speaker, at time: TimeInterval, text: String) -> String {
-        "**[\(NotesFM.timestamp(time))] \(speaker.label)** — \(text)"
+    private func render(speaker: Speaker, at time: TimeInterval, text: String) -> String {
+        switch style {
+        case .labelled:
+            return "**[\(NotesFM.timestamp(time))] \(speaker.label)** — \(text)"
+        case .plain:
+            // A note stays visually distinct even unlabelled. It is the one line
+            // the user typed rather than said, and losing that distinction would
+            // put their own words in the mouth of whoever was talking.
+            return speaker == .note ? "> \(text)" : text
+        }
     }
 
     /// Appends to the end of the file. Never rewrites it, so the cost of a flush
     /// is the same in the third hour of a meeting as in the first minute.
     private func write(_ lines: [String]) {
         guard !lines.isEmpty else { return }
-        guard let data = (lines.joined(separator: "\n") + "\n").data(using: .utf8) else { return }
+        // Blocks are separated by a blank line, not a newline. Markdown joins
+        // single-newline lines into one paragraph, so without this every turn ran
+        // together into a single block when the file was rendered.
+        guard let data = (lines.joined(separator: "\n\n") + "\n\n").data(using: .utf8) else { return }
 
         diskLock.lock()
         defer { diskLock.unlock() }

@@ -131,6 +131,22 @@ enum MeetingAudioError: LocalizedError {
     }
 }
 
+/// How transcript lines are written into the file.
+///
+/// `plain` is the default because of how the file is actually used: it is read
+/// end to end, and then handed to a model to turn into notes. A wall of
+/// `**[00:04:12] You** —` prefixes serves neither. Attribution still does the
+/// work it was built for — two capture streams are what allow both sides to be
+/// transcribed at all — it simply stops being printed.
+enum TranscriptStyle: String, Sendable {
+    /// Continuous prose. No timestamps, no speaker names; a change of speaker is
+    /// a paragraph break and nothing more.
+    case plain
+    /// `**[00:04:12] You** — …`, which is what makes a transcript searchable by
+    /// position and by who was talking.
+    case labelled
+}
+
 // MARK: - The meeting clock
 
 /// Wall time minus every paused span.

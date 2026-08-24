@@ -270,6 +270,8 @@ private struct MeetingDetailView: View {
     @State private var draftBody: String
     @State private var pendingSave: Task<Void, Never>?
     @State private var isConfirmingDelete = false
+    @State private var isRefining = false
+    @State private var refineError: String?
     @FocusState private var titleFocused: Bool
 
     init(store: MeetingStore, note: MeetingNote, selectedID: Binding<String?>) {
@@ -285,6 +287,8 @@ private struct MeetingDetailView: View {
             header
             Divider()
             content
+            Divider()
+            footer
         }
         .navigationTitle(note.title)
         .toolbar {
@@ -383,6 +387,86 @@ private struct MeetingDetailView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // MARK: Refine
+
+    /// The one action in this app that sends anything off the machine, so it is a
+    /// button somebody presses, never something that happens on its own — and it
+    /// says where the text goes right next to itself rather than in a settings
+    /// pane nobody opens.
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Button {
+                    refine()
+                } label: {
+                    HStack(spacing: 6) {
+                        if isRefining {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "wand.and.stars")
+                        }
+                        Text(isRefining ? "Refining…" : "Refine into Notes")
+                    }
+                    .frame(minWidth: 150)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .controlSize(.large)
+                .disabled(isRefining || draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Rewrite this transcript as meeting notes using the Codex CLI")
+
+                if let refineError {
+                    Label(refineError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(isRefining
+                         ? "Codex is working. This usually takes under a minute."
+                         : "Sends this transcript to Codex and saves the notes as a new file. Nothing else in this app leaves your Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func refine() {
+        guard !isRefining else { return }
+        // The model must see what is on screen, not what was last debounced.
+        saveNow()
+        isRefining = true
+        refineError = nil
+
+        let transcript = draftBody
+        let title = draftTitle
+        let source = note
+
+        Task {
+            do {
+                let notes = try await Refine.notes(from: transcript, title: title)
+                isRefining = false
+                // Selecting the new note replaces this view, so the flag is
+                // cleared first — nothing should be left mutating a dead view.
+                if let id = store.createSibling(of: source, titleSuffix: " — Notes", body: notes) {
+                    selectedID = id
+                } else {
+                    refineError = "Notes were written but could not be saved."
+                }
+            } catch {
+                isRefining = false
+                refineError = error.localizedDescription
+                Log.write("Refine failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: Body

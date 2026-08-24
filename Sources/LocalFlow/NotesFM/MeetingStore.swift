@@ -343,6 +343,36 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// Writes a new note beside an existing one and returns its id.
+    ///
+    /// Used by the refine action. A separate file, never an edit of the original:
+    /// the transcript is the record of what was actually said, and a model's
+    /// rewrite of it — however good — must not be able to replace that. Sharing
+    /// the source note's date prefix keeps the pair adjacent in the folder.
+    @discardableResult
+    func createSibling(of source: MeetingNote, titleSuffix: String, body: String) -> String? {
+        let directory = source.url.deletingLastPathComponent()
+        let base = source.title.isEmpty ? "Untitled" : source.title
+        // Refining an already-refined note should not stack the suffix up.
+        let title = base.hasSuffix(titleSuffix) ? base : base + titleSuffix
+        let stem = MeetingMarkdown.uniqueStem(title: title, started: source.started, in: directory)
+
+        let note = MeetingNote(
+            id: stem,
+            url: directory.appendingPathComponent(stem).appendingPathExtension("md"),
+            title: title,
+            started: source.started,
+            // Zero seconds: no audio was recorded into this file.
+            duration: 0,
+            folder: source.folder,
+            body: body.hasSuffix("\n") ? body : body + "\n"
+        )
+        guard write(note) else { return nil }
+        reload()
+        Log.write("MeetingStore wrote \(note.url.lastPathComponent)")
+        return note.id
+    }
+
     func delete(_ note: MeetingNote) {
         do {
             // Trash, never remove. A meeting deleted by a mis-click has to be

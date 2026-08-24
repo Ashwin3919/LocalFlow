@@ -27,6 +27,7 @@ final class Settings: @unchecked Sendable {
         case autoPunctuate
         case hasCompletedSetup
         case meetingLocale
+        case meetingSpeakerLabels
     }
 
     private let defaults = UserDefaults.standard
@@ -35,6 +36,7 @@ final class Settings: @unchecked Sendable {
         defaults.register(defaults: [
             Key.hotkeyMode.rawValue: "fn",
             Key.meetingLocale.rawValue: "en-US",
+            Key.meetingSpeakerLabels.rawValue: false,
             Key.pushToTalkEnabled.rawValue: true,
             Key.handsFreeEnabled.rawValue: true,
             Key.tapToLock.rawValue: true,
@@ -143,6 +145,16 @@ final class Settings: @unchecked Sendable {
     var meetingLocale: String {
         get { defaults.string(forKey: Key.meetingLocale.rawValue) ?? "en-US" }
         set { defaults.set(newValue, forKey: Key.meetingLocale.rawValue) }
+    }
+
+    /// Off by default: see `TranscriptStyle`.
+    var meetingSpeakerLabels: Bool {
+        get { defaults.bool(forKey: Key.meetingSpeakerLabels.rawValue) }
+        set { defaults.set(newValue, forKey: Key.meetingSpeakerLabels.rawValue) }
+    }
+
+    var meetingTranscriptStyle: TranscriptStyle {
+        meetingSpeakerLabels ? .labelled : .plain
     }
 
     /// Set once the user has been through the first-run permission guide, so it

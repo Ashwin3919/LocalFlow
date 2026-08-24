@@ -26,6 +26,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--notesfm-selftest") {
             exit(NotesFMSelfTest.run())
         }
+        // Runs the same code path the Refine button uses, so the Process wiring
+        // can be exercised without a GUI. Prints the notes; writes no files.
+        if let index = CommandLine.arguments.firstIndex(of: "--notesfm-refine"),
+           index + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[index + 1]
+            let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+            guard !text.isEmpty else {
+                FileHandle.standardError.write(Data("could not read \(path)\n".utf8))
+                exit(1)
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var code: Int32 = 0
+            // `Task.detached`, not `Task`. This method is `@MainActor`, so a plain
+            // `Task` inherits the main actor and could never start while the
+            // semaphore below is holding the main thread — a deadlock, not a slow
+            // network call. The button in the library has no such problem: it
+            // awaits rather than blocking.
+            Task.detached {
+                do {
+                    let notes = try await Refine.notes(
+                        from: text,
+                        title: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                    )
+                    print(notes)
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("refine failed: \(error.localizedDescription)\n".utf8))
+                    code = 1
+                }
+                semaphore.signal()
+            }
+            semaphore.wait()
+            exit(code)
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--notesfm-capture-test") {
             let seconds = CommandLine.arguments.count > index + 1
                 ? Double(CommandLine.arguments[index + 1]) ?? 8

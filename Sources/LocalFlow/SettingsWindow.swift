@@ -72,6 +72,7 @@ private struct SettingsView: View {
     @State private var historyEnabled = Settings.shared.historyEnabled
     @State private var micUID = Settings.shared.microphoneUID
     @State private var meetingLocale = Settings.shared.meetingLocale
+    @State private var speakerLabels = Settings.shared.meetingSpeakerLabels
     @State private var meetingLocales: [Locale] = []
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var ollamaReachable: Bool? = nil
@@ -116,6 +117,33 @@ private struct SettingsView: View {
                  + "cannot be transcribed twice.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text("Transcript").font(.headline)
+            Toggle("Label every line with a timestamp and speaker", isOn: $speakerLabels)
+                .onChange(of: speakerLabels) { _, value in
+                    Settings.shared.meetingSpeakerLabels = value
+                }
+            Text(speakerLabels
+                 ? "Lines are written as **[00:04:12] You** — …  Searchable by position and by who spoke, at the cost of being harder to read straight through."
+                 : "The transcript is written as continuous prose, and a change of speaker is a paragraph break. This is what Refine into Notes reads, and what most people want to skim.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Applies to the next meeting. Files already written are untouched.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Divider()
+
+            Text("Refine into Notes").font(.headline)
+            Text(Refine.isAvailable
+                 ? "Codex CLI found. The button under a meeting sends that transcript to Codex and saves the result as a separate file — your recording is never overwritten."
+                 : "Codex CLI not found. Install it and sign in to enable the Refine into Notes button. Everything else works without it.")
+                .font(.caption)
+                .foregroundStyle(Refine.isAvailable ? Color.secondary : Color.orange)
                 .fixedSize(horizontal: false, vertical: true)
 
             Divider()

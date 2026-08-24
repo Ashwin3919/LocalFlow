@@ -5,7 +5,7 @@ Two features, one menu-bar app, no Electron, no network.
 - **LocalFlow** — hold Fn, speak, release, text appears in the focused app. Shipped and in daily use.
 - **NotesFM** — Fn+R records a meeting, Fn+P pauses it, transcribing both sides live into a markdown file. Built, not yet proven against a real call.
 
-Everything runs on-device. The only network traffic that ever happens is macOS fetching its own speech models once, and an optional localhost Ollama call that is **off by default**.
+Recording and transcription are **always** on-device. Network traffic happens in exactly three places: macOS fetching its own speech models once, an optional localhost Ollama call that is **off by default**, and **Refine into Notes** — a button that hands one transcript to the local Codex CLI, which does reach OpenAI. Nothing is sent unless somebody presses it.
 
 ## Working agreements
 
@@ -75,6 +75,12 @@ Sources/LocalFlow/NotesFM/
 
 **Distribution is source-based, deliberately.** A prebuilt `.app` needs a paid Developer ID to notarize, or users click through security warnings. An app compiled on the user's own machine carries no quarantine flag, so Gatekeeper never objects.
 
+**Transcripts are plain prose by default, not `**[00:04:12] You** —` lines.** The file is read end to end and then handed to a model; a wall of timestamped speaker prefixes serves neither. Dual capture still does the work it was built for — two streams are what allow both sides to be transcribed at all — the labels simply stop being printed. `Settings → Meetings` turns them back on, and `TranscriptStyle` is the switch. Typed notes stay as `>` blockquotes so the user's own words are never put in a speaker's mouth.
+
+**Refine writes a new file; it never edits the transcript.** `MeetingStore.createSibling` puts the notes next to the recording as `… — Notes`. A model's rewrite of what was said must not be able to replace what was actually recorded, and the raw file stays the record.
+
+**Refine shells out to `codex exec`, and is given no power beyond text.** `--sandbox read-only` in a temp directory, `--ephemeral`, stdout to `/dev/null`, and the answer read from `--output-last-message` so progress chatter can never land in somebody's notes. Codex is an agentic coding tool; here it is a text transform and has no means to be anything else.
+
 **Meeting files are markdown text, and the file is the source of truth.** `MeetingNote` is metadata plus a body *string*, not a parsed segment tree. A parsed model would let a hand edit put the file into a state the parser rejects, losing the user's words on the next save.
 
 **Speaker labels come from the stream, not a model.** Mic is You, system audio is Them. This is why two separate captures are worth the extra work — speaker identification is normally the hardest part of meeting transcription and here it is free.
@@ -98,6 +104,8 @@ Sources/LocalFlow/NotesFM/
 - **`CATapDescription.isExclusive` is a scope switch, not a lock.** The global initialiser sets it `true` meaning "all except the listed processes". Setting it `false` inverts it to "only the listed processes" — silence.
 - **Default output device changes leave the tap stale and silent.** Plugging in AirPods requires rebuilding the whole graph, tap included. Watched and handled.
 - **Apple's analyzer performs no audio conversion** and rejects any format but the one it asked for. This is the documented cause of "works in batch, silent when streaming".
+- **A GUI app does not inherit the shell's `PATH`.** `Refine.locate()` checks where the Codex CLI actually installs before falling back to asking a login shell. Assuming `codex` is on `PATH` works from a terminal and fails in the shipped app.
+- **`Task { }` inside a `@MainActor` method inherits the main actor.** The `--notesfm-refine` seam deadlocked instantly because a `DispatchSemaphore` held the main thread while the `Task` waited for it. `Task.detached` is required whenever a blocking wait is involved.
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
 - **A window that cannot become key silently eats every keystroke.** No error, no warning — the text field just never receives anything. This is what made "Add a note…" impossible to type into for the whole first version of the HUD.
 - **Fn produces no keyDown, so `.holdBegan` fires before the letter of any chord.** Fn+R therefore started a dictation, which then tripped the meeting's own "finish dictating first" guard, so Fn+R never once started a meeting — and the release typed whatever it had heard into the focused app. `HotkeyManager.fireChord` marks the hold as spoken for and suppresses the release; `abandonHold()` discards the recording silently.
@@ -118,7 +126,7 @@ Sources/LocalFlow/NotesFM/
 
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
-**Verified:** dictation end to end; `--notesfm-selftest` 43/43 — durability, markdown round trip, note stamping and the whole pause clock; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+**Verified:** dictation end to end; `--notesfm-selftest` 59/59 — durability, markdown round trip, note stamping and the whole pause clock; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
 
 **Verified: the installer path.** Rehearsed end to end from a clean clone —
 `install.sh` → checks → existing cert detected → release build → bundle → sign →
@@ -140,6 +148,8 @@ public.
 - German spoken through it. The locale retry path has never fired.
 - The library sidebar and toolbar rendering, and Ollama cleanup.
 - **Typing into the HUD note field.** The panel fix follows from the SDK, but no keystroke has been observed landing in it.
+- **The Refine button itself.** The code path behind it is proven — `--notesfm-refine` runs the same `Refine.notes` through the app binary and returned real notes in 8.7 s — but nobody has clicked the button, so the SwiftUI state, the green tint and the jump to the new note are unobserved.
+- **A very long transcript through Refine.** Tested at ~1 kB. A two-hour meeting is a different proposition and the 240 s timeout is a guess.
 - **Pause and resume against live audio.** The clock arithmetic is tested; stopping and rebuilding a real mic graph and a real process tap mid-meeting is not.
 - **A long pause with the analyzer left idle.** Nothing documents what `SpeechAnalyzer` does when its input goes quiet for an hour.
 - Fn+P, and Fn+R now that it no longer trips the dictation guard.

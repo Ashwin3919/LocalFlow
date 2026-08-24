@@ -9,15 +9,18 @@ one microphone.
   a markdown file; `Fn+P` pauses it. Built and unit-tested, not yet proven
   against a real call.
 
-No account, no subscription, no network traffic except optionally to
-`localhost:11434`.
+Recording and transcription are **always** local. Network traffic happens in
+three places and nowhere else: macOS fetching its own speech models once, an
+optional `localhost:11434` Ollama call that is off by default, and the
+**Refine into Notes** button, which hands one transcript to the Codex CLI
+(section 15). Nothing leaves the machine unless somebody presses that button.
 
 This document explains **how the thing is built and why it is built that way**.
 For decisions, dead ends and maintenance gotchas, see [`../NOTES.md`](../NOTES.md).
 
 | | Part I — dictation | Part II — meetings | Part III — shared |
 |---|---|---|---|
-| Sections | 1–9 | 10–14 | 15–18 |
+| Sections | 1–9 | 10–15 | 16–19 |
 | Lives in | `Sources/LocalFlow/` | `Sources/LocalFlow/NotesFM/` | both |
 
 ---
@@ -836,7 +839,33 @@ transcript itself is intact, because it was already flushed.
 
 ---
 
-## 14. Durability — the file is the original, not an export
+## 14. The transcript format, and durability
+
+### Prose by default, labels on request
+
+Lines used to be written as `**[00:04:12] You** — …`. They are now written as
+continuous prose: no timestamps, no speaker names, a change of speaker rendered
+as nothing more than a paragraph break.
+
+The reason is how the file is actually used — read end to end, then handed to a
+model (section 15). Timestamped speaker prefixes serve neither reader. Dual
+capture still does the work it was built for, because two streams are what allow
+both sides to be transcribed *at all*; only the labelling stops being printed.
+`Settings → Meetings` turns it back on, and `TranscriptStyle` is the switch.
+
+Two things stay visible, because dropping them would lose information rather than
+noise:
+
+- **A typed note is a `>` blockquote.** It is the one line the user wrote instead
+  of said, and merging it into the prose would put their words in a speaker's
+  mouth.
+- **A pause is still `_— paused for 4m 10s —_`.** It marks something missing.
+
+Blocks are separated by a **blank** line, not a newline. Markdown joins
+single-newline lines into one paragraph, so without that every turn ran together
+into a single block when the file was rendered.
+
+### The file is the original, not an export
 
 The design rule everything else follows from: **the markdown file on disk is the
 source of truth.** `MeetingNote` is metadata plus a body *string*, never a parsed
@@ -896,9 +925,83 @@ the first heading. The self-test asserts that a hand edit round-trips
 
 ---
 
+## 15. Refine into Notes — the one thing that leaves the Mac
+
+A transcript is a wall of prose. What people want from a meeting is the summary,
+the decisions and the action items. That is a language-model job, and it is the
+only feature in this app that touches a network.
+
+```mermaid
+flowchart TD
+    BTN([green button pressed]) --> SAVE[saveNow, so the model sees<br/>what is on screen rather than<br/>the last debounced write]
+    SAVE --> LOC{locate codex}
+    LOC -->|"not found"| ERR1([say so, change nothing])
+    LOC -->|found| TMP[create a temp directory]
+    TMP --> RUN["codex exec<br/>--sandbox read-only<br/>--ephemeral<br/>--output-last-message"]
+    RUN -->|"prompt on stdin"| WAIT{exit within 240 s?}
+    WAIT -->|no| KILL([terminate, report a timeout])
+    WAIT -->|"non-zero status"| ERR2([report the stderr tail])
+    WAIT -->|"zero"| READ[read the answer file]
+    READ --> FENCE[strip a whole-answer<br/>markdown fence]
+    FENCE --> SIB[["createSibling writes<br/>… — Notes.md"]]
+    SIB --> SEL([select the new note])
+
+    style BTN fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style SIB fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style RUN fill:#5c3a6e,stroke:#3d2549,color:#fff
+```
+
+### Why the CLI rather than an HTTP call
+
+The user is already signed in to Codex on this machine, so **no API key lives in
+this app** — nothing to store, nothing to leak, nothing to put in Settings. The
+subscription they already pay for is the credential.
+
+### Five constraints, each one deliberate
+
+- **A separate file, always.** `createSibling` writes `… — Notes.md` beside the
+  recording. A model's rewrite of what was said must never be able to overwrite
+  what was actually recorded. The self-test asserts the transcript is
+  byte-identical afterwards.
+- **`--sandbox read-only`, in a temporary directory.** Codex is an *agentic
+  coding tool* that can edit files and run commands. Here it is a text transform,
+  and it is given no means to be anything else.
+- **The answer comes from `--output-last-message`, not stdout.** Stdout is a
+  stream of progress events; parsing it would eventually land a spinner frame or
+  a tool call in somebody's meeting notes. Stdout goes to `/dev/null`, which also
+  removes the risk of an undrained pipe deadlocking a long run.
+- **The prompt goes in on stdin.** A two-hour transcript as an `argv` entry is a
+  length limit waiting to be hit. It is written from a background queue, because
+  a prompt larger than the pipe buffer would block the writer while nothing
+  drains the other end.
+- **The prompt forbids invention.** The transcript carries no speaker names, so
+  the model *cannot* know who owns an action. It is told not to guess, to keep the
+  speakers' own wording for commitments and numbers, to write `[unclear]` rather
+  than a plausible reconstruction, and to omit a section rather than pad it.
+
+### Failure is reported, never papered over
+
+Missing CLI, not signed in, timeout, non-zero exit — each produces a specific
+sentence beside the button. The transcript is untouched in every one of those
+cases, which is the property that makes the button safe to press.
+
+> **`PATH` gotcha.** A GUI app does not inherit the shell's `PATH`.
+> `Refine.locate()` checks where the CLI actually installs (`~/.local/bin`,
+> Homebrew, `~/.codex/packages/…`) before falling back to asking `/bin/zsh -lc`.
+> Assuming `codex` is simply on `PATH` works when you test from a terminal and
+> fails in the shipped app.
+
+> **Concurrency gotcha.** `Task { }` inside a `@MainActor` method inherits the
+> main actor. The `--notesfm-refine` CLI seam deadlocked on the first run because
+> a `DispatchSemaphore` held the main thread while that `Task` waited for it.
+> `Task.detached` is required wherever a blocking wait is involved. The button
+> itself is unaffected: it awaits rather than blocking.
+
+---
+
 # Part III — Shared
 
-## 15. Permissions and signing
+## 16. Permissions and signing
 
 ### What must be granted by hand
 
@@ -952,7 +1055,7 @@ automatically and falls back to ad-hoc if it is absent.
 
 ---
 
-## 16. File map
+## 17. File map
 
 | File | Responsibility |
 |---|---|
@@ -986,12 +1089,13 @@ automatically and falls back to ad-hoc if it is absent.
 | `MeetingStore.swift` | markdown + frontmatter, lenient parsing, folder scan, rename/move/delete/search |
 | `MeetingHUD.swift` | `KeyableMeetingPanel` — the floating window shown while recording |
 | `NotesFMWindow.swift` / `NotesFMLibrary.swift` | `NSWindow` host and the SwiftUI three-pane library |
-| `SelfTest.swift` | `--notesfm-selftest`, 43 checks, no microphone required |
+| `Refine.swift` | the Codex CLI bridge — locate, prompt, run sandboxed, unwrap the answer |
+| `SelfTest.swift` | `--notesfm-selftest`, 59 checks, no microphone and no network required |
 | `CaptureTest.swift` | **Test Audio Capture…**, the only way to check the system-audio grant |
 
 ---
 
-## 17. Measured results
+## 18. Measured results
 
 Taken from a real session on macOS 26.5.2, Apple Silicon, 32 GB.
 
@@ -1005,14 +1109,15 @@ Taken from a real session on macOS 26.5.2, Apple Silicon, 32 GB.
 | Transcription, 5.06 s audio | **185 ms** (≈27× realtime) | — |
 | Release → text on screen | **290 ms** | < 1 s ✅ |
 | Mic open latency | **52–70 ms** | — |
-| `--notesfm-selftest` | **43 / 43** | durability, round trip, note stamping, pause clock ✅ |
+| `--notesfm-selftest` | **59 / 59** | durability, round trip, note stamping, pause clock, transcript format, refine plumbing ✅ |
+| Refine round trip | **8.7 s** | ~1 kB transcript, through the app binary |
 | Build warnings | **0** | Swift 6 strict concurrency on ✅ |
 
 An earlier revision of this document and the README claimed a **740 KB** app.
 That was already stale before meetings were added — the pre-pause binary measures
 1656 KB. The argument it supported is unaffected; the number was simply wrong.
 
-## 18. Not yet verified
+## 19. Not yet verified
 
 Honest status, so nobody assumes more than was tested. Compiling is not evidence.
 
@@ -1040,6 +1145,16 @@ Honest status, so nobody assumes more than was tested. Compiling is not evidence
   `SpeechAnalyzer` does when its input goes quiet for an hour.
 - **Typing into the HUD note field.** The panel fix follows from the SDK, but no
   keystroke has been observed landing in it.
+- **The Refine button itself.** The code behind it is proven — `--notesfm-refine`
+  drives the same `Refine.notes` through the app binary and returned real notes in
+  8.7 s — but nobody has *clicked* it, so the SwiftUI state, the green tint and the
+  jump to the new note are unobserved.
+- **A long transcript through Refine.** Exercised at roughly 1 kB. A two-hour
+  meeting is a different proposition, and the 240 s timeout is a guess rather than
+  a measurement.
+- **The plain transcript format against real speech.** The format is asserted by
+  the self-test; how continuous prose reads when a recogniser produced it, with no
+  speaker breaks to lean on, has not been seen.
 - **The microphone surviving an input-device change mid-meeting**, and meetings
   honouring the chosen device.
 - `Fn+P`, and `Fn+R` now that it no longer trips the dictation guard.
