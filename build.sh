@@ -23,6 +23,18 @@ if [[ "$(uname -m)" != "arm64" ]]; then
     echo "Apple's on-device speech models are not available on Intel hardware." >&2
     exit 1
 fi
+# A stale Command Line Tools install passes every check above and then fails deep
+# in the build with "using Swift tools version 6.2.0 but the installed version is
+# 5.10.0". Package.swift is swift-tools-version 6.2; catch an old toolchain here.
+SWIFT_SEMVER="$(swift --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+SWIFT_MAJOR="${SWIFT_SEMVER%%.*}"; SWIFT_MINOR="${SWIFT_SEMVER#*.}"
+if [[ -z "$SWIFT_SEMVER" ]] || (( SWIFT_MAJOR < 6 || (SWIFT_MAJOR == 6 && SWIFT_MINOR < 2) )); then
+    echo "LocalFlow needs Swift 6.2 or later (this toolchain reports ${SWIFT_SEMVER:-none})." >&2
+    echo "Update the Command Line Tools — no Apple ID, no full Xcode, ~900 MB:" >&2
+    echo "    softwareupdate --list      # find 'Command Line Tools for Xcode 26.x'" >&2
+    echo "    softwareupdate --install 'Command Line Tools for Xcode 26.6'" >&2
+    exit 1
+fi
 
 echo "==> Compiling (release)"
 swift build --package-path "$ROOT" -c release

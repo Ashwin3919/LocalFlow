@@ -13,6 +13,8 @@ REPO="${LOCALFLOW_REPO:-https://github.com/Ashwin3919/LocalFlow.git}"
 CLONE_DIR="${LOCALFLOW_DIR:-$HOME/LocalFlow}"
 
 MIN_MACOS=26
+MIN_SWIFT_MAJOR=6
+MIN_SWIFT_MINOR=2
 
 # Run under zsh, not sh.
 #
@@ -91,6 +93,29 @@ the Swift compiler, which is all this builds with."
 fi
 
 swift_version="$(swift --version 2>/dev/null | head -1)"
+
+# The Command Line Tools existing is not enough — they must be recent enough to
+# carry Swift ${MIN_SWIFT_MAJOR}.${MIN_SWIFT_MINOR} and the macOS ${MIN_MACOS} SDK
+# (Package.swift is swift-tools-version 6.2, and SpeechTranscriber lives in that
+# SDK). A years-old toolchain passes the check above and then dies at build time
+# with "using Swift tools version 6.2.0 but the installed version is 5.10.0", so
+# catch it here with a sentence instead.
+swift_semver="$(printf '%s' "$swift_version" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+sw_major="${swift_semver%%.*}"
+sw_minor="${swift_semver#*.}"
+if [[ -z "$swift_semver" ]] \
+   || (( sw_major < MIN_SWIFT_MAJOR )) \
+   || (( sw_major == MIN_SWIFT_MAJOR && sw_minor < MIN_SWIFT_MINOR )); then
+    fail "Your Command Line Tools are too old: this Mac has Swift ${swift_semver:-unknown},
+but LocalFlow needs Swift ${MIN_SWIFT_MAJOR}.${MIN_SWIFT_MINOR} or later — the macOS ${MIN_MACOS} SDK, where
+SpeechTranscriber lives. Update the tools (no Apple ID, no full Xcode, ~900 MB):
+
+    softwareupdate --list                                  # find the exact label
+    softwareupdate --install 'Command Line Tools for Xcode 26.6'
+
+Use whichever 'Command Line Tools for Xcode 26.x' label your Mac lists, then run
+this again. Installing full Xcode from the App Store works too."
+fi
 
 # ─── 4. Get the source ───────────────────────────────────────────────────────
 if [[ -f "./Package.swift" ]]; then

@@ -23,7 +23,7 @@ project, made to avoid paying for a cloud dictation subscription.
 |---|---|
 | **macOS 26 (Tahoe) or later** | Non-negotiable — the app uses `SpeechTranscriber`, which does not exist in earlier versions. |
 | **Apple Silicon** | Tested on M-series. Intel is untested. |
-| **Xcode Command Line Tools** | `xcode-select --install`. Full Xcode is *not* needed. |
+| **Command Line Tools for Xcode 26+** | Must be recent enough to carry **Swift 6.2** and the **macOS 26 SDK** — an older toolchain fails the build. Full Xcode is *not* needed. See [Toolchain](#toolchain) below. |
 | **~200 MB of disk, once** | macOS downloads its English and German speech models on first launch. After that it never touches the network. |
 
 ## Install
@@ -47,7 +47,40 @@ git clone <this-repo> LocalFlow && cd LocalFlow
 ```
 
 Either way, a **LocalFlow Setup** window opens and walks you through the three
-permissions macOS requires. Grant them and start talking.
+permissions macOS requires. Grant them and start talking. If it does not appear
+on its own, open it from the menu bar → **Setup Guide…**, or force it with
+`open /Applications/LocalFlow.app --args --setup`.
+
+### Toolchain
+
+The app is built against **Swift 6.2** and the **macOS 26 SDK** (that SDK is where
+`SpeechTranscriber` lives). Having *some* Command Line Tools installed is not
+enough — a toolchain from an older Xcode passes the "tools are present" check and
+then fails the build with:
+
+```
+error: package 'localflow' is using Swift tools version 6.2.0 but the installed version is 5.10.0
+```
+
+Check what you have:
+
+```sh
+swift --version                          # need Swift 6.2 or later
+xcrun --sdk macosx --show-sdk-version    # need 26.x
+```
+
+If either is too old, update the Command Line Tools — **no Apple ID, no full
+Xcode, about 900 MB**:
+
+```sh
+softwareupdate --list                                  # find the exact label
+softwareupdate --install 'Command Line Tools for Xcode 26.6'
+```
+
+Use whichever `Command Line Tools for Xcode 26.x` label your Mac lists. Installing
+full Xcode from the App Store also works but is far larger. `install.sh` and
+`build.sh` both check this now and stop with these instructions rather than a wall
+of compiler errors.
 
 ### If your Mac is not supported
 
@@ -199,9 +232,19 @@ make log               # watch what it is doing, live
 make stop              # kill it
 ```
 
+**The build fails with "using Swift tools version 6.2.0 but the installed version
+is 5.10.0".** Your Command Line Tools are too old. See [Toolchain](#toolchain) —
+one `softwareupdate --install` fixes it.
+
 **Nothing happens when I hold Fn.** Open `make log` and check for
 `Event tap active`. If Accessibility or Input Monitoring reads `false`, open the
 Setup Guide.
+
+**The Setup window never opens / I can't grant the microphone.** Open it from the
+menu bar → **Setup Guide…**, or force it with
+`open /Applications/LocalFlow.app --args --setup`. LocalFlow runs as a menu-bar
+app, and the microphone prompt only appears while the Setup window is up — the
+guide promotes the app to the foreground so macOS actually shows the dialog.
 
 **It says permissions are granted but it still does not work.** A stale entry
 from an earlier build. Run:
