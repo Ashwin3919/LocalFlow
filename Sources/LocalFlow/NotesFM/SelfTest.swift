@@ -287,6 +287,100 @@ enum NotesFMSelfTest {
         check("a meeting whose own title ends in the word notes is not mistaken for one",
               MeetingMarkdown.meetingStem(ofNotesStem: "notes") == nil)
 
+        // 10. The engine table. No network and no CLI needed: what can silently
+        //     be wrong here is the argument construction and the shape inference,
+        //     and both are pure functions.
+        check("codex reads its answer from a file, not stdout",
+              RefineEngine.codex.answerSource == .file)
+        check("codex takes the prompt on stdin",
+              RefineEngine.codex.promptDelivery == .standardInput)
+        for engine in [RefineEngine.claude, .cursorAgent, .ollama] {
+            check("\(engine.name) reads its answer from stdout",
+                  engine.answerSource == .standardOutput)
+            check("\(engine.name) takes the prompt on stdin",
+                  engine.promptDelivery == .standardInput)
+        }
+        check("every preset is marked verified, because each one was actually run",
+              RefineEngine.presets.allSatisfy(\.isVerified))
+        check("every preset states where the transcript goes",
+              RefineEngine.presets.allSatisfy { !$0.destination.isEmpty })
+        check("preset ids are unique and lookup finds each one",
+              RefineEngine.presets.allSatisfy { RefineEngine.preset(id: $0.id)?.id == $0.id })
+        check("only the local engine claims to send the transcript nowhere",
+              RefineEngine.presets.filter { $0.destination.contains("nowhere") }.count == 1
+                  && RefineEngine.ollama.destination.contains("nowhere"))
+
+        // Token substitution. A path landing in the wrong argument is the bug
+        // that would send Codex's answer to a file nobody reads.
+        let resolved = RefineEngine.codex.resolvedArguments(
+            directory: "/tmp/dir", answerPath: "/tmp/dir/notes.md", prompt: "unused", model: ""
+        )
+        check("the scratch directory is substituted",
+              resolved.contains("/tmp/dir") && !resolved.contains { $0.contains("{dir}") })
+        check("the answer path is substituted",
+              resolved.contains("/tmp/dir/notes.md") && !resolved.contains { $0.contains("{answer}") })
+        check("substitution does not merge arguments",
+              resolved.count == RefineEngine.codex.arguments.count)
+        check("the model is substituted for a runner that needs one",
+              RefineEngine.ollama.resolvedArguments(
+                  directory: "/tmp", answerPath: "/tmp/a", prompt: "p", model: "llama3.2:3b"
+              ) == ["run", "llama3.2:3b"])
+
+        // A command somebody typed. `Process` takes an argument vector, so there
+        // is no shell to quote for — but a path with a space in it must survive.
+        check("a plain command line splits on whitespace",
+              RefineEngine.splitArguments("run --no-session -t") == ["run", "--no-session", "-t"])
+        check("runs of whitespace collapse",
+              RefineEngine.splitArguments("  a   b  ") == ["a", "b"])
+        check("an empty line is no arguments at all",
+              RefineEngine.splitArguments("   ").isEmpty)
+        check("double quotes keep a path with a space in one argument",
+              RefineEngine.splitArguments("--cd \"/My Folder/x\" -p")
+                  == ["--cd", "/My Folder/x", "-p"])
+        check("an empty quoted pair is a real empty argument",
+              RefineEngine.splitArguments("--allowed-tools \"\"") == ["--allowed-tools", ""])
+        check("a custom engine is never described as sandboxed",
+              RefineEngine.custom(binary: "goose", arguments: ["run"], model: "").isSandboxed == false)
+        check("a custom command with {answer} in it is read from a file",
+              RefineEngine.custom(
+                  binary: "x", arguments: ["-o", "{answer}"], model: ""
+              ).answerSource == .file)
+        check("a custom command with {prompt} in it takes the prompt as an argument",
+              RefineEngine.custom(
+                  binary: "x", arguments: ["-t", "{prompt}"], model: ""
+              ).promptDelivery == .argument)
+
+        // Terminal escape codes out of an error message. Ollama writes a spinner
+        // to stderr, so without this a failure was pages of escape sequences.
+        check("a cursor-hide sequence is stripped",
+              Refine.stripControlCodes("\u{1B}[?25lhello\u{1B}[?25h") == "hello")
+        check("a colour sequence is stripped but its text survives",
+              Refine.stripControlCodes("\u{1B}[31merror:\u{1B}[0m gone") == "error: gone")
+        check("a carriage return overwrites the line it returned over",
+              Refine.stripControlCodes("first\rsecond") == "second")
+        check("ordinary text is untouched",
+              Refine.stripControlCodes("could not connect to Ollama")
+                  == "could not connect to Ollama")
+        // The exact bytes Ollama put into a real answer: an erase-to-end-of-line
+        // in the middle of a sentence, which reached the finished notes as "[K".
+        check("an erase-to-end-of-line mid-sentence is removed from the notes",
+              Refine.stripControlCodes("and assigned tasks to \u{1B}[K\nPriya.")
+                  == "and assigned tasks to \nPriya.")
+        // Also lifted verbatim: the wrap sequence. Stripping the escapes alone
+        // left "shi" behind and the word appeared twice.
+        check("a word rewound before a wrap is not written twice",
+              Refine.stripControlCodes("shipping the installer\u{1B}[9D\u{1B}[K\ninstaller. To recap")
+                  == "shipping the installer. To recap")
+        check("a rewind with no count given moves back one",
+              Refine.stripControlCodes("abcx\u{1B}[D") == "abc")
+        check("a rewind cannot run off the front of the text",
+              Refine.stripControlCodes("ab\u{1B}[99D") == "")
+        check("a line break that follows no rewind is kept",
+              Refine.stripControlCodes("one\ntwo") == "one\ntwo")
+        check("markdown a model wrote survives being cleaned",
+              Refine.stripControlCodes("## Notes\n\n- **Priya** — release notes\n")
+                  == "## Notes\n\n- **Priya** — release notes\n")
+
         // 11. The echo filter. Fixtures are real pairs lifted out of a recording
         //     made on speakers, where the microphone re-heard the far end and both
         //     transcribers wrote the same sentence. That recording is the reason

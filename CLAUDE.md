@@ -5,7 +5,7 @@ Two features, one menu-bar app, no Electron, no network.
 - **LocalFlow** — hold Fn, speak, release, text appears in the focused app. Shipped and in daily use.
 - **NotesFM** — Fn+R records a meeting, Fn+P pauses it, transcribing both sides live into a markdown file. Built, not yet proven against a real call.
 
-Recording and transcription are **always** on-device. Network traffic happens in exactly three places: macOS fetching its own speech models once, an optional localhost Ollama call that is **off by default**, and **Refine into Notes** — a button that hands one transcript to the local Codex CLI, which does reach OpenAI. Nothing is sent unless somebody presses it.
+Recording and transcription are **always** on-device. Network traffic happens in exactly three places: macOS fetching its own speech models once, an optional localhost Ollama call that is **off by default**, and **Refine into Notes** — a button that hands one transcript to a CLI the user chooses. With the default (Codex) that reaches OpenAI; with the Ollama engine it reaches nothing at all, and the app is then entirely offline. Nothing is sent unless somebody presses it.
 
 ## Working agreements
 
@@ -91,6 +91,27 @@ filename at load, in memory only — an old library reads correctly without bein
 rewritten on disk. A notes file whose meeting is gone stays listed: an orphan is
 still a file with somebody's words in it.
 
+**The notes engine is a typed table, not a command name.** The obvious version of
+"let people choose their tool" is a text field holding a binary name, and it
+cannot work: these CLIs do not share an invocation shape. Verified against the
+tools installed here rather than from memory — `codex` takes the prompt on stdin
+and writes its answer to a **file** (`--output-last-message`) with `--sandbox
+read-only`; `claude -p` answers on **stdout** and is restrained with
+`--allowed-tools ''`; `cursor-agent -p` answers on stdout and needs `--mode ask
+--trust --sandbox enabled`; `ollama run <model>` is stdin to stdout with nothing
+to sandbox because it has no tools. Three different answers to every question, so
+`RefineEngine` carries the arguments, and the `{dir}`/`{answer}`/`{prompt}`/`{model}`
+tokens in them *declare the shape* — an `{answer}` present means the reply is a
+file, a `{prompt}` present means the transcript goes in as an argument. That is
+what keeps a row of toggles off the Settings pane. Presets are marked verified
+only if they have actually been run; **Custom** is marked unsandboxed always,
+because what somebody else's tool does with a `--yes` flag cannot be known.
+
+**Ollama is the point of the engine setting, not a bonus.** Refine was the one
+feature that broke the app's own premise. Choosing the local runner means nothing
+leaves the Mac at all, and it is also the fastest of the four (3 s against Codex's
+7 s), at the cost of a small model following the section headings loosely.
+
 **Refine shells out to `codex exec`, and is given no power beyond text.** `--sandbox read-only` in a temp directory, `--ephemeral`, stdout to `/dev/null`, and the answer read from `--output-last-message` so progress chatter can never land in somebody's notes. Codex is an agentic coding tool; here it is a text transform and has no means to be anything else.
 
 **Meeting files are markdown text, and the file is the source of truth.** `MeetingNote` is metadata plus a body *string*, not a parsed segment tree. A parsed model would let a hand edit put the file into a state the parser rejects, losing the user's words on the next save.
@@ -132,6 +153,18 @@ is the right way to be wrong.
 - **A GUI app does not inherit the shell's `PATH`.** `Refine.locate()` checks where the Codex CLI actually installs before falling back to asking a login shell. Assuming `codex` is on `PATH` works from a terminal and fails in the shipped app.
 - **`Task { }` inside a `@MainActor` method inherits the main actor.** The `--notesfm-refine` seam deadlocked instantly because a `DispatchSemaphore` held the main thread while the `Task` waited for it. `Task.detached` is required whenever a blocking wait is involved.
 - **Duplicate stale TCC entries** look identical in System Settings. If permissions read granted but nothing works: `tccutil reset Accessibility com.localflow.app` and `tccutil reset ListenEvent com.localflow.app`. Printing twice means duplicates were the problem.
+- **An agent CLI's progress output can land inside somebody's notes, and
+  stripping the escape codes is not enough.** Measured from Ollama's real stdout:
+  before wrapping a line it writes part of the next word, rewinds the cursor over
+  it with `ESC[<n>D`, erases to end of line, breaks the line, then writes the word
+  again in full. Deleting the escapes and keeping everything else put `assigned
+  tasks to [K` and duplicated half-words into finished notes. `ESC[<n>D` has to be
+  *honoured* — it deletes the last n characters — and the line break straight
+  after it is the wrap, so the logical line has none. Ollama does this whether
+  stdout is a pipe or a file, and neither `NO_COLOR` nor `TERM=dumb` stops it.
+  This is why an engine that writes its answer to a file is trusted over one that
+  answers on stdout, and why Settings has a **Test Engine…** button that shows the
+  raw reply.
 - **`.fixedSize(horizontal: false, vertical: true)` sets a pane's *minimum*
   height, and SwiftUI centres content it cannot fit.** This is what made the
   library window unusable, and it looked like everything except what it was. One
@@ -193,7 +226,7 @@ is the right way to be wrong.
 
 Branch `feature/notesfm`. `main` holds shipped dictation. Tag `v0.2.0-dictation` is the last known-good dictation-only build.
 
-**Verified:** dictation end to end; `--notesfm-selftest` 83/83 — durability, markdown round trip, note stamping, the whole pause clock and the echo filter's thresholds against real pairs from a real call; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
+**Verified:** dictation end to end; `--notesfm-selftest` 117/117 — durability, markdown round trip, note stamping, the whole pause clock and the echo filter's thresholds against real pairs from a real call; zero build warnings; idle footprint 49 MB at 0.0% CPU after install.
 
 **Verified: system audio capture, on this machine, for real.** A 5-minute call was
 recorded with both streams — the log line is `system audio confirmed`. That
@@ -214,6 +247,16 @@ sidebar, the list, the transcript and the green button all draw. The notes pairi
 took the user's own library from 7 rows to 5, with the refined meetings showing a
 wand and a `Notes | Transcript` switch that opens on the notes.
 
+**Verified: all four notes engines, through the app binary.** `--notesfm-refine`
+runs exactly the `Refine.notes` the green button calls. Same transcript, same
+prompt, measured on this Mac: **Codex 7 s, Claude 9 s, Cursor Agent 55 s, Ollama
+3 s**, all four returning clean markdown with zero escape bytes. Each engine's
+read-only flag was tested by prompting it to write a file: Claude and Cursor Agent
+both refused and **wrote nothing** — Claude said it would not route around the
+block with a shell command. The Settings pane was checked through the
+accessibility tree: engine picker and Test button render inside the window, and
+the model field appears only for an engine whose command needs one.
+
 **Verified: the installer path.** Rehearsed end to end from a clean clone —
 `install.sh` → checks → existing cert detected → release build → bundle → sign →
 `/Applications` → launch, then `--notesfm-selftest` from the installed binary.
@@ -222,10 +265,14 @@ directory*, which is the claim the `make-cert.sh` decision rests on and had not
 been demonstrated before. Piping the script into `sh` now fails with the
 corrected command instead of a syntax error.
 
-**Blocked on one thing only:** `install.sh` and `README.md` still say `<you>`
-where the GitHub owner goes, and there is no git remote — nothing has ever been
-pushed. The one-liner cannot work until both are filled in and the repo is
-public.
+**No longer blocked.** The repository is published at
+`github.com/Ashwin3919/LocalFlow`, and `install.sh` and `README.md` carry the real
+owner, so the one-liner resolves. The three remaining `<you>` mentions in
+`install.sh` are the guard that detects an *unfilled* placeholder and its error
+message — they are supposed to be there.
+
+**`origin/main` is the trunk now.** Local `main` is a stale six-commit branch from
+before anything was pushed; treat `origin/main` as the truth and branch from it.
 
 **Not verified — do not claim these work:**
 - Real *dual* capture over a long call. One 5-minute call worked; the multi-hour

@@ -145,10 +145,30 @@ truth: edit it in Finder or any editor and the library picks the change up. The
 library window (menu bar → **NotesFM Library…**, or ⌘L) lists them, searches
 inside them, and sorts them into folders that are real sub-folders on disk.
 
-**Refine into Meeting Notes** is the one button that sends anything anywhere —
-see Privacy below. It writes the notes to their own file next to the recording and
+**Refine into Meeting Notes** turns a transcript into a summary with decisions and
+action items. It writes the notes to their own file next to the recording and
 shows them as a **Notes** tab on the meeting; the raw transcript is never
 rewritten, and refining again replaces the notes rather than piling up copies.
+
+Which tool does the writing is up to you — `Settings → Meetings → Engine`:
+
+| Engine | Where your transcript goes | Speed |
+|---|---|---|
+| **Codex CLI** (default) | OpenAI | ~7–10 s |
+| **Claude Code** | Anthropic | ~7–9 s |
+| **Cursor Agent** | Cursor | ~50 s |
+| **Ollama** | **nowhere — it runs on this Mac** | ~3 s |
+| **Custom…** | wherever your command sends it | — |
+
+Each built-in engine is run with the flag that denies it file and shell access,
+in a temporary folder. There is a **Test Engine…** button that runs three
+sentences through your choice and shows you the raw reply, so a tool that prints
+progress noise into its answer is obvious before a real meeting goes through it.
+
+Picking **Ollama** makes LocalFlow entirely offline — see Privacy. Install it with
+`brew install ollama`, start it (`brew services start ollama`), and pull a model
+(`ollama pull llama3.2:3b`). A small local model is quick and follows the section
+headings loosely; a bigger one reads better and takes longer.
 
 ## Privacy
 
@@ -161,9 +181,12 @@ rewritten, and refining again replaces the notes rather than piling up copies.
   - macOS fetching its own speech models, once, on first launch.
   - `localhost:11434` if you turn on Ollama cleanup yourself. Off by default, and
     localhost is not the internet.
-  - **Refine into Meeting Notes**, which hands one transcript to the Codex CLI —
-    and Codex does reach OpenAI. Nothing is sent unless you press that button.
-    It uses the Codex sign-in you already have, so no API key is stored here.
+  - **Refine into Meeting Notes**, which hands one transcript to whichever engine
+    you chose. Nothing is sent unless you press that button, and Settings says
+    where it goes right next to the picker. With the default (Codex) that is
+    OpenAI; **choose Ollama and it goes nowhere at all** — the whole app is then
+    offline. Engines use the CLI sign-in you already have, so no API key is
+    stored here.
 - No analytics, no crash reporting, no third-party SDKs of any kind.
 - Transcript history is a plain text file at
   `~/Library/Application Support/LocalFlow/`. Turn it off in Settings, or delete it.

@@ -76,6 +76,11 @@ private struct SettingsView: View {
     @State private var meetingLocales: [Locale] = []
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var ollamaReachable: Bool? = nil
+    @State private var refineEngineID = Settings.shared.refineEngineID
+    @State private var refineCustomBinary = Settings.shared.refineCustomBinary
+    @State private var refineCustomArguments = Settings.shared.refineCustomArguments
+    @State private var refineModel = Settings.shared.refineModel
+    @State private var refineTest: RefineTestState = .idle
     @State private var historyCount = History.count()
 
     private let microphones = AudioDevices.inputs()
@@ -138,13 +143,7 @@ private struct SettingsView: View {
 
             Divider()
 
-            Text("Refine into Notes").font(.headline)
-            Text(Refine.isAvailable
-                 ? "Codex CLI found. The button under a meeting sends that transcript to Codex and saves the result as a separate file — your recording is never overwritten."
-                 : "Codex CLI not found. Install it and sign in to enable the Refine into Notes button. Everything else works without it.")
-                .font(.caption)
-                .foregroundStyle(Refine.isAvailable ? Color.secondary : Color.orange)
-                .fixedSize(horizontal: false, vertical: true)
+            refineSection
 
             Divider()
 
@@ -198,6 +197,200 @@ private struct SettingsView: View {
         }
         return microphones.first(where: { $0.id == micUID })?.name
             ?? "a device that is not connected"
+    }
+
+    // MARK: Refine engine
+
+    /// The result of the Test button. Kept out of `Refine` itself: this is about
+    /// showing somebody what their tool actually emits before they trust it with
+    /// a real meeting.
+    private enum RefineTestState {
+        case idle
+        case running
+        case succeeded(String)
+        case failed(String)
+    }
+
+    private var selectedEngine: RefineEngine {
+        if let preset = RefineEngine.preset(id: refineEngineID) { return preset }
+        return RefineEngine.custom(
+            binary: refineCustomBinary.trimmingCharacters(in: .whitespaces),
+            arguments: RefineEngine.splitArguments(refineCustomArguments),
+            model: refineModel
+        )
+    }
+
+    /// Held as constants rather than built inline: a concatenation chain with
+    /// string interpolation inside it is what made the type checker give up on
+    /// this view.
+    private static let customEngineHelp = """
+        The transcript is written to the command's standard input, and the notes \
+        are read from its standard output. Two optional substitutions: \
+        \(RefineEngine.Token.answer) if the tool writes its reply to a file \
+        instead, and \(RefineEngine.Token.directory) for the temporary folder it \
+        is run in. Quotes are honoured; nothing else is — this is not a shell.
+        """
+
+    private static let customEngineWarning = """
+        LocalFlow cannot tell what your command is allowed to do. Each built-in \
+        engine is run with the flag that denies it file and shell access; a \
+        command entered here gets whatever flags you give it.
+        """
+
+    private var refineSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Refine into Notes").font(.headline)
+
+            Picker("Engine", selection: $refineEngineID) {
+                ForEach(RefineEngine.presets) { engine in
+                    Text(engine.name).tag(engine.id)
+                }
+                Text("Custom…").tag(RefineEngine.customID)
+            }
+            .onChange(of: refineEngineID) { _, value in
+                Settings.shared.refineEngineID = value
+                refineTest = .idle
+            }
+
+            // Said out loud, next to the control, rather than left in a privacy
+            // page nobody opens. This is the only button in the app that can send
+            // anything anywhere, so where it goes is not a footnote.
+            Label {
+                Text("Your transcript goes to: \(selectedEngine.destination).")
+            } icon: {
+                Image(systemName: selectedEngine.id == RefineEngine.ollama.id
+                      ? "lock.laptopcomputer" : "globe")
+            }
+            .font(.caption)
+            .foregroundStyle(selectedEngine.id == RefineEngine.ollama.id ? Color.green : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if selectedEngine.arguments.contains(where: { $0.contains(RefineEngine.Token.model) }) {
+                TextField("Model", text: $refineModel)
+                    .onChange(of: refineModel) { _, value in
+                        Settings.shared.refineModel = value.trimmingCharacters(in: .whitespaces)
+                    }
+                Text("Any model you have pulled — `ollama list` shows them. A small "
+                     + "model summarises a meeting in seconds but follows the section "
+                     + "headings loosely; a larger one reads better and takes longer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if refineEngineID == RefineEngine.customID {
+                customEngineFields
+            }
+
+            refineAvailability
+            refineTestRow
+        }
+    }
+
+    private var customEngineFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Command", text: $refineCustomBinary, prompt: Text("goose"))
+                .onChange(of: refineCustomBinary) { _, value in
+                    Settings.shared.refineCustomBinary = value.trimmingCharacters(in: .whitespaces)
+                    refineTest = .idle
+                }
+            TextField("Arguments", text: $refineCustomArguments, prompt: Text("run --no-session -t"))
+                .onChange(of: refineCustomArguments) { _, value in
+                    Settings.shared.refineCustomArguments = value
+                    refineTest = .idle
+                }
+            Text(Self.customEngineHelp)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Label(Self.customEngineWarning, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var refineAvailability: some View {
+        let engine = selectedEngine
+        if engine.binary.isEmpty {
+            Text("Enter the command to run.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else if let path = Refine.locate(engine) {
+            Text("Found at \(path).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        } else {
+            Text("`\(engine.binary)` was not found. Install it and sign in, or pick "
+                 + "another engine. Everything else in the app works without it.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var refineTestRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button("Test Engine…") { runRefineTest() }
+                    .disabled(isTestingRefine || selectedEngine.binary.isEmpty)
+                if isTestingRefine { ProgressView().controlSize(.small) }
+            }
+            switch refineTest {
+            case .idle:
+                Text("Runs three sentences through it and shows you exactly what comes "
+                     + "back, so a tool that prints progress chatter into its answer is "
+                     + "obvious before a real meeting goes through it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .running:
+                Text("Running…").font(.caption).foregroundStyle(.secondary)
+            case .succeeded(let notes):
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("It answered. This is verbatim:", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                    ScrollView {
+                        Text(notes)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 110)
+                    .padding(6)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 5))
+                }
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var isTestingRefine: Bool {
+        if case .running = refineTest { return true }
+        return false
+    }
+
+    private func runRefineTest() {
+        refineTest = .running
+        let engine = selectedEngine
+        let model = refineModel.trimmingCharacters(in: .whitespaces)
+        Task {
+            do {
+                let notes = try await Refine.notes(
+                    from: Refine.testTranscript, title: "Engine Test", engine: engine, model: model
+                )
+                refineTest = .succeeded(notes)
+            } catch {
+                refineTest = .failed(error.localizedDescription)
+            }
+        }
     }
 
     private func revealMeetingsFolder() {

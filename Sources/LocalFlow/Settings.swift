@@ -28,6 +28,10 @@ final class Settings: @unchecked Sendable {
         case hasCompletedSetup
         case meetingLocale
         case meetingSpeakerLabels
+        case refineEngineID
+        case refineCustomBinary
+        case refineCustomArguments
+        case refineModel
     }
 
     private let defaults = UserDefaults.standard
@@ -155,6 +159,47 @@ final class Settings: @unchecked Sendable {
 
     var meetingTranscriptStyle: TranscriptStyle {
         meetingSpeakerLabels ? .labelled : .plain
+    }
+
+    // MARK: Refine
+
+    /// Which tool the Refine button runs. Defaults to Codex, so upgrading changes
+    /// nothing for anybody who had this working already.
+    var refineEngineID: String {
+        get { defaults.string(forKey: Key.refineEngineID.rawValue) ?? RefineEngine.codex.id }
+        set { defaults.set(newValue, forKey: Key.refineEngineID.rawValue) }
+    }
+
+    var refineCustomBinary: String {
+        get { defaults.string(forKey: Key.refineCustomBinary.rawValue) ?? "" }
+        set { defaults.set(newValue, forKey: Key.refineCustomBinary.rawValue) }
+    }
+
+    var refineCustomArguments: String {
+        get { defaults.string(forKey: Key.refineCustomArguments.rawValue) ?? "" }
+        set { defaults.set(newValue, forKey: Key.refineCustomArguments.rawValue) }
+    }
+
+    /// Only meaningful to an engine whose command contains `{model}`.
+    var refineModel: String {
+        get { defaults.string(forKey: Key.refineModel.rawValue) ?? Self.defaultRefineModel }
+        set { defaults.set(newValue, forKey: Key.refineModel.rawValue) }
+    }
+
+    /// Small enough to pull without thinking about it and good enough to
+    /// summarise a meeting. Verified against a real transcript before being made
+    /// the default here.
+    static let defaultRefineModel = "llama3.2:3b"
+
+    /// The engine as configured, presets and typed-in command alike, so callers
+    /// never have to know which of the two it is.
+    var refineEngine: RefineEngine {
+        if let preset = RefineEngine.preset(id: refineEngineID) { return preset }
+        return RefineEngine.custom(
+            binary: refineCustomBinary.trimmingCharacters(in: .whitespaces),
+            arguments: RefineEngine.splitArguments(refineCustomArguments),
+            model: refineModel
+        )
     }
 
     /// Set once the user has been through the first-run permission guide, so it

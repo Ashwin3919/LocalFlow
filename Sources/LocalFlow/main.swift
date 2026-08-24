@@ -47,7 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     let notes = try await Refine.notes(
                         from: text,
-                        title: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                        title: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
+                        engine: Settings.shared.refineEngine,
+                        model: Settings.shared.refineModel
                     )
                     print(notes)
                 } catch {
